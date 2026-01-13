@@ -1,0 +1,12 @@
+{
+  "name": "push-claude-plugin",
+  "version": "1.0.0",
+  "description": "Plugin marketplace for Push voice task integrations",
+  "author": {
+    "name": "Push",
+    "email": "support@pushto.do"
+  },
+  "repository": "https://github.com/MasslessAI/push-claude-plugin",
+  "homepage": "https://pushto.do",
+  "license": "MIT"
+}

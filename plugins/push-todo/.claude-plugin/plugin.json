@@ -1,0 +1,23 @@
+{
+  "name": "push-todo",
+  "version": "1.0.0",
+  "description": "Receive and work on voice tasks captured on Push iOS app",
+  "author": {
+    "name": "Push",
+    "email": "support@pushto.do"
+  },
+  "repository": "https://github.com/MasslessAI/push-claude-plugin",
+  "homepage": "https://pushto.do",
+  "license": "MIT",
+  "keywords": [
+    "voice",
+    "tasks",
+    "ios",
+    "mobile",
+    "todo",
+    "productivity",
+    "push",
+    "iphone"
+  ],
+  "category": "productivity"
+}
