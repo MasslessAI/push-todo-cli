@@ -19,29 +19,13 @@ Push is a voice-powered todo app. Capture tasks by speaking on your phone → wo
 
 ### Claude Code
 
-#### Step 1: Add the marketplace
-
-```
-/plugin marketplace add MasslessAI/push-claude-plugin
+```bash
+curl -sL https://raw.githubusercontent.com/MasslessAI/push-claude-plugin/main/install.sh | bash
 ```
 
-#### Step 2: Install the plugin
-
-```
-/plugin install push-todo@push-claude-plugin
-```
-
-#### Step 3: Connect your account
-
-```
-/push-todo setup
-```
-
-This opens a browser for Sign in with Apple authentication. No API key copy/paste needed!
+Then restart Claude Code and run `/push-todo setup` to connect your account.
 
 ### OpenAI Codex CLI
-
-For Codex users, install manually:
 
 ```bash
 curl -sL https://raw.githubusercontent.com/MasslessAI/push-claude-plugin/main/codex/install-codex.sh | bash
@@ -49,14 +33,11 @@ curl -sL https://raw.githubusercontent.com/MasslessAI/push-claude-plugin/main/co
 
 Then run `$push-todo setup` to connect your account.
 
-**Note:** Codex uses `$push-todo` (dollar sign) instead of `/push-todo`.
-
 ## Usage
 
 | Command | Description |
 |---------|-------------|
 | `/push-todo` | Show your pending tasks |
-| `/push-todo all` | Show all pending tasks |
 | `/push-todo setup` | Connect or reconnect your Push account |
 
 Or just say "show my Push tasks" and Claude will activate the skill automatically.
@@ -81,16 +62,9 @@ When you start a Claude Code session, you'll see:
 2. **AI Processing**: Push extracts summary, project hint, and normalized content
 3. **Sync**: Tasks appear in Claude Code via session-start hook
 4. **Work**: Select a task and Claude helps you implement it
-5. **Complete**: Mark done in Claude Code → syncs back to your iPhone
+5. **Complete**: Mark done → syncs back to your iPhone
 
 ## Troubleshooting
-
-### "Plugin not found" after marketplace add
-
-Check that the marketplace was added correctly:
-```
-/plugin marketplace list
-```
 
 ### Setup doesn't complete
 
@@ -101,8 +75,7 @@ Check that the marketplace was added correctly:
 ### Tasks don't appear
 
 1. Verify config exists: `cat ~/.config/push/config`
-2. Check API key is set: `source ~/.config/push/config && echo $PUSH_API_KEY`
-3. Ensure you have pending tasks in the Push app
+2. Ensure you have pending tasks in the Push app
 
 ## Support
 
