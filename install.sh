@@ -6,14 +6,14 @@ set -e
 echo "Installing Push Tasks for Claude Code..."
 
 CLAUDE_DIR="$HOME/.claude"
-SKILLS_DIR="$CLAUDE_DIR/skills/push-todo"
+SKILLS_DIR="$CLAUDE_DIR/skills/push-tasks"
 
 # Create directories
 mkdir -p "$SKILLS_DIR/scripts"
 mkdir -p "$SKILLS_DIR/hooks"
 
 # Download files from GitHub
-BASE_URL="https://raw.githubusercontent.com/MasslessAI/push-claude-plugin/main/plugins/push-todo"
+BASE_URL="https://raw.githubusercontent.com/MasslessAI/push-claude-plugin/main/plugins/push-tasks"
 
 echo "Downloading skill files..."
 curl -sL "$BASE_URL/skills/push-tasks/SKILL.md" > "$SKILLS_DIR/SKILL.md"
@@ -30,7 +30,7 @@ echo "Installation complete!"
 echo ""
 echo "Next steps:"
 echo "  1. Restart Claude Code"
-echo "  2. Run: /push-todo setup"
+echo "  2. Run: /push-tasks setup"
 echo "  3. Sign in with your Push account"
 echo "  4. Start capturing voice tasks on your iPhone!"
 echo ""

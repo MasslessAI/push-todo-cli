@@ -23,7 +23,7 @@ Push is a voice-powered todo app. Capture tasks by speaking on your phone → wo
 curl -sL https://raw.githubusercontent.com/MasslessAI/push-claude-plugin/main/install.sh | bash
 ```
 
-Then restart Claude Code and run `/push-todo setup` to connect your account.
+Then restart Claude Code and run `/push-tasks setup` to connect your account.
 
 ### OpenAI Codex CLI
 
@@ -37,8 +37,8 @@ Then run `$push-todo setup` to connect your account.
 
 | Command | Description |
 |---------|-------------|
-| `/push-todo` | Show your pending tasks |
-| `/push-todo setup` | Connect or reconnect your Push account |
+| `/push-tasks` | Show your pending tasks |
+| `/push-tasks setup` | Connect or reconnect your Push account |
 
 Or just say "show my Push tasks" and Claude will activate the skill automatically.
 
@@ -69,7 +69,7 @@ When you start a Claude Code session, you'll see:
 ### Setup doesn't complete
 
 1. Make sure you're signed into Push on your iPhone
-2. Try running setup again: `/push-todo setup`
+2. Try running setup again: `/push-tasks setup`
 3. Check browser for any authentication errors
 
 ### Tasks don't appear
