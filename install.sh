@@ -16,7 +16,7 @@ mkdir -p "$SKILLS_DIR/hooks"
 BASE_URL="https://raw.githubusercontent.com/MasslessAI/push-claude-plugin/main/plugins/push-todo"
 
 echo "Downloading skill files..."
-curl -sL "$BASE_URL/skills/push-tasks/SKILL.md" > "$SKILLS_DIR/SKILL.md"
+curl -sL "$BASE_URL/skills/push-todo/SKILL.md" > "$SKILLS_DIR/SKILL.md"
 curl -sL "$BASE_URL/scripts/setup.py" > "$SKILLS_DIR/scripts/setup.py"
 curl -sL "$BASE_URL/scripts/fetch_task.py" > "$SKILLS_DIR/scripts/fetch_task.py"
 curl -sL "$BASE_URL/scripts/check_tasks.py" > "$SKILLS_DIR/scripts/check_tasks.py"

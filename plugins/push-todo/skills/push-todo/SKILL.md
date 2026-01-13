@@ -1,5 +1,5 @@
 ---
-name: push-tasks
+name: push-todo
 description: |
   Fetch and work on coding tasks captured via voice on the Push iOS app.
 
