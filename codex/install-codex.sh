@@ -31,7 +31,7 @@ At the start of each session, check for pending tasks:
 ```bash
 source ~/.config/push/config 2>/dev/null && python3 ~/.codex/skills/push-todo/scripts/check_tasks.py 2>/dev/null
 ```
-If tasks > 0, inform: "You have X task(s) from Push. Type $push-tasks to see them."
+If tasks > 0, inform: "You have X task(s) from Push. Type $push-todo to see them."
 '
 
 if [ -f "$AGENTS_FILE" ]; then
@@ -50,7 +50,7 @@ echo ""
 echo "Installation complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Run: \$push-tasks setup"
+echo "  1. Run: \$push-todo setup"
 echo "  2. Sign in with your Push account"
 echo "  3. Start capturing voice tasks on your iPhone!"
 echo ""

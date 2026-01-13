@@ -9,9 +9,9 @@ This command fetches and displays your pending voice tasks from the Push iOS app
 
 ## Usage
 
-- `/push-tasks` - Show the next pending task
-- `/push-tasks all` - Show all pending tasks
-- `/push-tasks setup` - Configure your Push connection
+- `/push-todo` - Show the next pending task
+- `/push-todo all` - Show all pending tasks
+- `/push-todo setup` - Configure your Push connection
 
 ## Instructions
 
@@ -24,12 +24,12 @@ When this command is invoked:
 
 2. **If not configured**: Run the setup flow:
    ```bash
-   python3 ~/.claude/skills/push-tasks/scripts/setup.py
+   python3 ~/.claude/skills/push-todo/scripts/setup.py
    ```
 
 3. **If configured**: Fetch tasks:
    ```bash
-   source ~/.config/push/config && python3 ~/.claude/skills/push-tasks/scripts/fetch_task.py
+   source ~/.config/push/config && python3 ~/.claude/skills/push-todo/scripts/fetch_task.py
    ```
 
 4. Present the tasks and ask which one to work on

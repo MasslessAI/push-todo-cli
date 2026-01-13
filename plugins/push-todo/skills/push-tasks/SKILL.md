@@ -24,7 +24,7 @@ Push is a voice-powered todo app. Users capture coding tasks by speaking on thei
 When the user wants to see their tasks, run:
 
 ```bash
-source ~/.config/push/config && python3 ~/.claude/skills/push-tasks/scripts/fetch_task.py
+source ~/.config/push/config && python3 ~/.claude/skills/push-todo/scripts/fetch_task.py
 ```
 
 This returns a list of pending tasks. Present them clearly:
@@ -48,7 +48,7 @@ When the user selects a task:
 
 1. Mark it as started:
    ```bash
-   python3 ~/.claude/skills/push-tasks/scripts/fetch_task.py --mark-started TASK_ID
+   python3 ~/.claude/skills/push-todo/scripts/fetch_task.py --mark-started TASK_ID
    ```
 
 2. Read the full task details from the script output
@@ -62,18 +62,18 @@ When the user selects a task:
 When the task is done:
 
 ```bash
-python3 ~/.claude/skills/push-tasks/scripts/fetch_task.py --mark-completed TASK_ID
+python3 ~/.claude/skills/push-todo/scripts/fetch_task.py --mark-completed TASK_ID
 ```
 
 Confirm to the user: "Task marked as complete in Push"
 
 ## Setup Mode
 
-When `$push-tasks setup` is invoked or API key is missing:
+When `$push-todo setup` is invoked or API key is missing:
 
 1. Run the setup script:
    ```bash
-   python3 ~/.claude/skills/push-tasks/scripts/setup.py
+   python3 ~/.claude/skills/push-todo/scripts/setup.py
    ```
 
 2. This opens a browser for Sign in with Apple authentication
@@ -94,4 +94,4 @@ Each task includes:
 
 If the API returns an error:
 - Check if PUSH_API_KEY is set in ~/.config/push/config
-- Suggest: "Run `/push-tasks setup` to configure your Push connection"
+- Suggest: "Run `/push-todo setup` to configure your Push connection"
