@@ -19,6 +19,29 @@ Help the user work on coding tasks they captured via voice on their iPhone.
 
 Push is a voice-powered todo app. Users capture coding tasks by speaking on their phone, then work on them later in Claude Code. This skill fetches those tasks and helps complete them.
 
+## Architecture: Two-Call Caching System
+
+For fast response times, this skill uses a prefetch + cache architecture:
+
+| Step | Script | What Happens | Latency |
+|------|--------|--------------|---------|
+| **Session start** | `check_tasks.py` | Fetches all tasks from API, caches locally, outputs count | ~1s (network) |
+| **User runs /push-todo** | `fetch_task.py` | Reads from cache instantly | ~70ms |
+
+### Cache Details
+- **Location:** `~/.config/push/cache/tasks.json`
+- **Max age:** 5 minutes (auto-refreshes if stale)
+- **Invalidation:** Tasks removed from cache when marked started/completed
+- **Fallback:** If API fails, shows stale cache; if cache missing, fetches from API
+
+### CLI Options
+```bash
+fetch_task.py [--all] [--refresh] [--json]
+  --all       Show all pending tasks (default: first task only)
+  --refresh   Force refresh from API (bypass cache)
+  --json      Output raw JSON format
+```
+
 ## Fetching Tasks
 
 When the user wants to see their tasks, run:
