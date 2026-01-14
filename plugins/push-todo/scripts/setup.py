@@ -29,6 +29,7 @@ from typing import Optional
 
 # Configuration
 API_BASE = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
+ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4dXpxY2JxaGlheG1maXR6eGxvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzU2OTY5MzQsImV4cCI6MjA1MTI3MjkzNH0.4Nm5_ABkgJCrrFc-bVzbx8qAp-SQo92HKziH7TBgspo"
 CONFIG_DIR = os.path.expanduser("~/.config/push")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config")
 
@@ -164,6 +165,7 @@ def register_project(api_key: str, client_type: str = "claude-code") -> dict:
         }).encode(),
         headers={
             "Content-Type": "application/json",
+            "apikey": ANON_KEY,
             "Authorization": f"Bearer {api_key}",
         },
         method="POST"
@@ -218,7 +220,10 @@ def initiate_device_flow(client_type: str = "claude-code") -> dict:
             "project_path": get_project_path(),
             "git_remote": get_git_remote(),
         }).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "apikey": ANON_KEY,
+        },
         method="POST"
     )
 
@@ -231,7 +236,10 @@ def poll_status(device_code: str) -> dict:
     req = urllib.request.Request(
         f"{API_BASE}/device-auth/poll",
         data=json.dumps({"device_code": device_code}).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "apikey": ANON_KEY,
+        },
         method="POST"
     )
 
