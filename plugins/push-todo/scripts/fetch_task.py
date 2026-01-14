@@ -54,6 +54,7 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional, List, Tuple
 
 # Configuration
 API_BASE_URL = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
@@ -62,7 +63,7 @@ CACHE_FILE = CACHE_DIR / "tasks.json"
 CACHE_MAX_AGE_SECONDS = 300  # 5 minutes
 
 
-def get_git_remote() -> str | None:
+def get_git_remote() -> Optional[str]:
     """
     Get the normalized git remote URL for the current directory.
 
@@ -114,7 +115,7 @@ def get_api_key() -> str:
     return key
 
 
-def load_cache() -> tuple[list, bool]:
+def load_cache() -> Tuple[List, bool]:
     """
     Load tasks from cache.
     Returns (tasks, is_stale) tuple.
@@ -140,7 +141,7 @@ def load_cache() -> tuple[list, bool]:
         return [], True
 
 
-def save_cache(tasks: list) -> None:
+def save_cache(tasks: List) -> None:
     """Save tasks to cache file."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_data = {
@@ -157,7 +158,7 @@ def remove_from_cache(task_id: str) -> None:
     save_cache(tasks)
 
 
-def fetch_tasks_from_api(git_remote: str | None = None) -> list:
+def fetch_tasks_from_api(git_remote: Optional[str] = None) -> List:
     """
     Fetch pending tasks from API.
 
@@ -189,7 +190,7 @@ def fetch_tasks_from_api(git_remote: str | None = None) -> list:
         raise ValueError(f"Network error: {e.reason}")
 
 
-def get_tasks(force_refresh: bool = False, git_remote: str | None = None) -> list:
+def get_tasks(force_refresh: bool = False, git_remote: Optional[str] = None) -> List:
     """
     Get tasks, using cache when available.
 
@@ -204,7 +205,7 @@ def get_tasks(force_refresh: bool = False, git_remote: str | None = None) -> lis
     3. If cache is stale, fetch from API
     4. If API fails and cache exists, use stale cache
     """
-    def filter_by_project(tasks: list) -> list:
+    def filter_by_project(tasks: List) -> List:
         """Filter tasks to current project if git_remote provided."""
         if not git_remote:
             return tasks
