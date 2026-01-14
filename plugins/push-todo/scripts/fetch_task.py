@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Fetch and display pending Push tasks.
+Version: 1.1.0 (with caching)
 
 This script retrieves pending tasks from the Push iOS app and outputs them
 in a format suitable for Claude Code to process.
