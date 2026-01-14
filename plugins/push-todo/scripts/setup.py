@@ -364,6 +364,46 @@ def do_full_device_auth(client_type: str = "claude-code") -> dict:
 
 
 # ============================================================================
+# STATUS DISPLAY
+# ============================================================================
+
+def show_status():
+    """Show current connection status."""
+    print()
+    print("  Push Connection Status")
+    print("  " + "=" * 40)
+    print()
+
+    existing_key = get_existing_key()
+    existing_email = get_existing_email()
+
+    if existing_key and existing_email:
+        print(f"  ✓ Connected as {existing_email}")
+        print(f"  ✓ API key: {existing_key[:16]}...")
+        print()
+        print("  Current project:")
+        git_remote = get_git_remote()
+        if git_remote:
+            print(f"    Git remote: {git_remote}")
+        else:
+            print(f"    Path: {get_project_path()}")
+        print()
+        print("  Run 'setup' to register this project.")
+        print("  Run 'setup --reauth' to re-authenticate.")
+    elif existing_key:
+        print(f"  ⚠ Partial config (missing email)")
+        print(f"    API key: {existing_key[:16]}...")
+        print()
+        print("  Run 'setup --reauth' to fix.")
+    else:
+        print("  ✗ Not connected")
+        print()
+        print("  Run 'setup' to connect your Push account.")
+
+    print()
+
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
@@ -381,7 +421,17 @@ def main():
         action="store_true",
         help="Force re-authentication (get new API key)"
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Show current connection status without registering"
+    )
     args = parser.parse_args()
+
+    # Handle --status flag (show status and exit)
+    if args.status:
+        show_status()
+        return
 
     client_type = args.client
     client_names = {
