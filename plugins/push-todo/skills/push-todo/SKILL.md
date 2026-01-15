@@ -19,6 +19,32 @@ Help the user work on coding tasks they captured via voice on their iPhone.
 
 Push is a voice-powered todo app. Users capture coding tasks by speaking on their phone, then work on them later in Claude Code. This skill fetches those tasks and helps complete them.
 
+## Project Scoping (Default Behavior)
+
+**By default, only tasks for the CURRENT PROJECT are shown** (based on git remote URL).
+
+| Scenario | Behavior |
+|----------|----------|
+| In a git repo | Only shows tasks assigned to this repo |
+| Not in a git repo | Shows all tasks |
+| User wants all tasks | Use `--all-projects` flag |
+
+This means running `/push-todo` in different projects shows different tasks automatically.
+
+### IMPORTANT: No Automatic Fallback
+
+**DO NOT automatically check other projects when there are no tasks for the current project.**
+
+When the script returns "No pending tasks for this project":
+- Just tell the user: "No pending tasks for this project."
+- **DO NOT** automatically run `--all-projects` to check other projects
+- **DO NOT** offer to check other projects unless the user explicitly asks
+
+The user can explicitly request all projects with:
+- `/push-todo all` (with `--all-projects` flag)
+- "Show me tasks from all projects"
+- "Check other projects"
+
 ## Architecture: Two-Call Caching System
 
 For fast response times, this skill uses a prefetch + cache architecture:
@@ -36,10 +62,11 @@ For fast response times, this skill uses a prefetch + cache architecture:
 
 ### CLI Options
 ```bash
-fetch_task.py [--all] [--refresh] [--json]
-  --all       Show all pending tasks (default: first task only)
-  --refresh   Force refresh from API (bypass cache)
-  --json      Output raw JSON format
+fetch_task.py [--all] [--all-projects] [--refresh] [--json]
+  --all           Show all pending tasks for current project (default: first task only)
+  --all-projects  Show tasks from ALL projects (not just current)
+  --refresh       Force refresh from API (bypass cache)
+  --json          Output raw JSON format
 ```
 
 ## Fetching Tasks
@@ -110,8 +137,30 @@ Each task includes:
 - `summary`: Brief description (AI-generated from voice)
 - `content`: Full normalized content from voice note
 - `transcript`: Original voice transcript (if user wants raw input)
-- `project_hint`: Which project this relates to (e.g., "Push", "AppleWhisper")
+- `project_hint`: Human-readable project name (e.g., "Push", "AppleWhisper")
+- `git_remote`: Normalized git remote URL for project scoping (e.g., "github.com/user/repo")
 - `created_at`: When the task was captured
+
+## Auto-Updates
+
+The plugin checks for updates from GitHub at each session start:
+
+| Behavior | When |
+|----------|------|
+| Silent | Plugin is up-to-date |
+| Notification | Newer version available on GitHub |
+| Auto-update | `PUSH_PLUGIN_AUTO_UPDATE=true` is set |
+
+**Update notification example:**
+```
+[Push] Update available: push-todo v1.0.0 → v1.1.0
+[Push] Run: cd ~/.claude/skills/push-todo && git pull
+```
+
+**Enable auto-updates:**
+```bash
+export PUSH_PLUGIN_AUTO_UPDATE=true
+```
 
 ## Error Handling
 

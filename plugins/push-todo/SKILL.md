@@ -31,6 +31,20 @@ Push is a voice-powered todo app. Users capture coding tasks by speaking on thei
 
 This means running `/push-todo` in different projects shows different tasks automatically.
 
+### IMPORTANT: No Automatic Fallback
+
+**DO NOT automatically check other projects when there are no tasks for the current project.**
+
+When the script returns "No pending tasks for this project":
+- Just tell the user: "No pending tasks for this project."
+- **DO NOT** automatically run `--all-projects` to check other projects
+- **DO NOT** offer to check other projects unless the user explicitly asks
+
+The user can explicitly request all projects with:
+- `/push-todo all` (with `--all-projects` flag)
+- "Show me tasks from all projects"
+- "Check other projects"
+
 ## Architecture: Two-Call Caching System
 
 For fast response times, this skill uses a prefetch + cache architecture:
