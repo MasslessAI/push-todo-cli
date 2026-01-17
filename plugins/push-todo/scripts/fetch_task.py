@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Fetch and display pending Push tasks.
-Version: 3.0.0 (unified hub architecture)
+Fetch and display active Push tasks.
+Version: 3.1.0 (unified hub architecture)
 
-This script retrieves pending tasks from the Push iOS app and outputs them
+This script retrieves active tasks from the Push iOS app and outputs them
 in a format suitable for Claude Code to process.
 
 ## Unified Hub Architecture (v3.0 - 2026-01-16)
@@ -25,7 +25,7 @@ Usage:
     python fetch_task.py [--all] [--all-projects] [--pinned] [--mark-completed TASK_ID]
 
 Options:
-    --all              Fetch all pending tasks for current project (default: first task only)
+    --all              Fetch all active tasks for current project (default: first task only)
     --all-projects     Fetch tasks from ALL projects (not just current)
     --pinned           Only show pinned (focused) tasks, or prioritize them at the top
     --mark-completed ID Mark a task as completed (syncs back to Push)
@@ -211,7 +211,7 @@ def remove_from_cache(task_id: str) -> None:
 
 def fetch_tasks_from_api(git_remote: Optional[str] = None) -> List:
     """
-    Fetch pending tasks from the synced-todos endpoint.
+    Fetch active tasks from the synced-todos endpoint.
 
     Uses the unified hub architecture - all tasks come from the normalized
     tables (todos + todo_actions with sync_enabled=true).
@@ -391,8 +391,8 @@ def format_task_for_display(task: dict) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch pending Push tasks")
-    parser.add_argument("--all", action="store_true", help="Fetch all pending tasks for current project")
+    parser = argparse.ArgumentParser(description="Fetch active Push tasks")
+    parser.add_argument("--all", action="store_true", help="Fetch all active tasks for current project")
     parser.add_argument("--all-projects", action="store_true", help="Fetch tasks from ALL projects (not just current)")
     parser.add_argument("--pinned", action="store_true", help="Only show pinned tasks, or prioritize them at the top")
     parser.add_argument("--mark-completed", metavar="ID", help="Mark a task as completed")
@@ -433,33 +433,40 @@ def main():
             # Always sort pinned tasks first, even without --pinned flag
             tasks = sorted(tasks, key=lambda t: (not t.get("is_focused", False)))
 
+        # Filter out tasks without display_number (required for predictable identification)
+        valid_tasks = [t for t in tasks if t.get("display_number")]
+        invalid_count = len(tasks) - len(valid_tasks)
+        if invalid_count > 0:
+            print(f"Warning: {invalid_count} task(s) missing display_number (skipped)", file=sys.stderr)
+        tasks = valid_tasks
+
         if not tasks:
             if args.pinned:
                 print("No pinned tasks found.")
             elif git_remote:
-                print(f"No pending tasks for this project.")
+                print(f"No active tasks for this project.")
             else:
-                print("No pending tasks from Push.")
+                print("No active tasks from Push.")
             sys.exit(0)
 
-        # Output
+        # Output - always use global display_number (#N format)
         if args.json:
             print(json.dumps({"tasks": tasks}, indent=2))
         elif args.all:
             scope = "this project" if git_remote else "all projects"
             pinned_suffix = ", pinned only" if args.pinned else ""
-            print(f"# {len(tasks)} Pending Tasks ({scope}{pinned_suffix})\n")
-            for i, task in enumerate(tasks, 1):
-                # Use display_number if available, otherwise fall back to loop index
+            print(f"# {len(tasks)} Active Tasks ({scope}{pinned_suffix})\n")
+            for task in tasks:
                 display_num = task.get("display_number")
-                task_label = f"#{display_num}" if display_num else f"Task {i}"
-                print(f"---\n### {task_label}\n")
+                print(f"---\n### #{display_num}\n")
                 print(format_task_for_display(task))
                 print()
         else:
             # Just the first task
-            print("# Task from Push\n")
-            print(format_task_for_display(tasks[0]))
+            task = tasks[0]
+            display_num = task.get("display_number")
+            print(f"# Task #{display_num} from Push\n")
+            print(format_task_for_display(task))
 
         sys.exit(0)
 

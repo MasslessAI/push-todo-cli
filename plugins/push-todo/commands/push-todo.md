@@ -1,16 +1,16 @@
 ---
-description: Show pending voice tasks from Push iOS app
+description: Show active voice tasks from Push iOS app
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 ---
 
 # Push Voice Tasks
 
-This command fetches and displays your pending voice tasks from the Push iOS app.
+This command fetches and displays your active voice tasks from the Push iOS app.
 
 ## Usage
 
-- `/push-todo` - Show the next pending task
-- `/push-todo all` - Show all pending tasks
+- `/push-todo` - Show the next active task
+- `/push-todo all` - Show all active tasks
 - `/push-todo setup` - Configure your Push connection
 
 ## Instructions

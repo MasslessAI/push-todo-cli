@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Prefetch and cache pending Push tasks for the current project.
+Prefetch and cache active Push tasks for the current project.
 
-This script is called by the session-start hook to prefetch pending tasks
+This script is called by the session-start hook to prefetch active tasks
 from the Push iOS app. It caches the task list and outputs the count.
 
 The cache is used by fetch_task.py to show results immediately.
@@ -139,7 +139,7 @@ def get_api_key() -> str:
 
 def fetch_tasks(git_remote: str) -> list:
     """
-    Fetch pending tasks from the synced-todos endpoint.
+    Fetch active tasks from the synced-todos endpoint.
 
     Args:
         git_remote: Normalized git remote URL for project filtering.

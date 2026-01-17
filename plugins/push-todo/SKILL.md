@@ -35,8 +35,8 @@ This means running `/push-todo` in different projects shows different tasks auto
 
 **DO NOT automatically check other projects when there are no tasks for the current project.**
 
-When the script returns "No pending tasks for this project":
-- Just tell the user: "No pending tasks for this project."
+When the script returns "No active tasks for this project":
+- Just tell the user: "No active tasks for this project."
 - **DO NOT** automatically run `--all-projects` to check other projects
 - **DO NOT** offer to check other projects unless the user explicitly asks
 
@@ -63,7 +63,7 @@ For fast response times, this skill uses a prefetch + cache architecture:
 ### CLI Options
 ```bash
 fetch_task.py [--all] [--all-projects] [--pinned] [--refresh] [--json]
-  --all           Show all pending tasks for current project (default: first task only)
+  --all           Show all active tasks for current project (default: first task only)
   --all-projects  Show tasks from ALL projects (not just current)
   --pinned        Only show pinned (focused) tasks
   --refresh       Force refresh from API (bypass cache)
@@ -80,35 +80,35 @@ python3 ~/.claude/skills/push-todo/scripts/fetch_task.py
 
 Note: The script reads the API key from `~/.config/push/config` automatically.
 
-This returns a list of pending tasks. Present them clearly:
+This returns a list of active tasks. Present them using the **global display number** (same as shown in the Push app):
 
 ```
-You have N pending tasks from Push:
+You have N active tasks from Push:
 
-1. **[Summary]**
-   Project: [project_hint or "Not specified"]
+#427 📌 **[Summary]**
    Details: [First 200 chars of content]
 
-2. **[Summary]**
-   ...
+#351 **[Summary]**
+   Details: ...
 
-Which task would you like to work on?
+Which task would you like to work on? (Use #N to reference)
 ```
+
+**IMPORTANT:** Always reference tasks by their global number (`#427`, `#351`, etc.), never by relative position (1st, 2nd). This ensures consistency between the Push app and Claude Code.
 
 ## Starting a Task
 
-When the user selects a task:
+When the user selects a task (e.g., "#427" or "work on 427"):
 
-1. Mark it as started:
-   ```bash
-   python3 ~/.claude/skills/push-todo/scripts/fetch_task.py --mark-started TASK_ID
-   ```
+1. Find the task by its display number from the fetched list
 
 2. Read the full task details from the script output
 
 3. If project_hint is provided, look for that project's CLAUDE.md
 
 4. Begin working on the task immediately
+
+Note: Users reference tasks by their global number (`#427`), which maps to the task's UUID for API calls.
 
 ## Completing a Task
 
@@ -136,7 +136,8 @@ When `$push-todo setup` is invoked or API key is missing:
 ## Task Fields
 
 Each task includes:
-- `id`: UUID for API calls
+- `display_number`: **Global task number** (e.g., 427) - use this to reference tasks (`#427`)
+- `id`: UUID for API calls (used internally for mark-completed)
 - `summary`: Brief description (AI-generated from voice)
 - `content`: Full normalized content from voice note
 - `transcript`: Original voice transcript (if user wants raw input)
@@ -144,6 +145,8 @@ Each task includes:
 - `git_remote`: Normalized git remote URL for project scoping (e.g., "github.com/user/repo")
 - `is_focused`: Boolean indicating if the task is pinned/focused (prioritized)
 - `created_at`: When the task was captured
+
+**Global Numbers:** Every task has a permanent `display_number` that matches the Push app. Always use `#N` format when referencing tasks.
 
 **Pinned Tasks:** Tasks marked as pinned in the Push app will appear with a 📌 indicator and are automatically sorted to the top of the list. Use `--pinned` to filter to only pinned tasks.
 
