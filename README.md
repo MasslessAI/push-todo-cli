@@ -105,6 +105,22 @@ Plugin push-todo updated: v1.2.0 → v1.2.1
 
 ## Development
 
+### How Updates Reach Users
+
+```
+Push code to main
+       ↓
+GitHub Actions bumps version in plugin.json
+       ↓
+User starts Claude Code (with auto-update enabled)
+       ↓
+Claude Code fetches plugin.json, sees new version
+       ↓
+Auto-downloads and installs update
+```
+
+**The version in `plugin.json` is the only signal.** When it changes, users get the update.
+
 ### Version Bumping
 
 Versions follow **X.Y.Z** format with automatic bumping:

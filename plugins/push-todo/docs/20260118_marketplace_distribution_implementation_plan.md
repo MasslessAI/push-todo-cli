@@ -1,7 +1,7 @@
 # Push Todo Plugin: Marketplace Distribution Implementation Plan
 
 **Date:** 2026-01-18
-**Status:** Planning
+**Status:** Implemented
 **Goal:** Convert from custom curl/git-based installation to Claude Code native marketplace distribution
 
 ---
@@ -14,6 +14,119 @@ The current push-todo plugin uses a custom installation and update mechanism (cu
 - Professional distribution
 - No git knowledge required for users
 - Same UX as official Anthropic plugins
+
+---
+
+## How Marketplace Updates Work
+
+### Key Discovery: Third-Party Auto-Update Default
+
+**Third-party marketplaces have auto-update DISABLED by default.**
+
+| Marketplace Type | Auto-Update Default |
+|------------------|---------------------|
+| Official Anthropic | Enabled |
+| Third-party (us) | **Disabled** |
+
+Users must explicitly enable auto-update for our marketplace via:
+```
+/plugin → Marketplaces → MasslessAI/push-claude-plugin → Enable auto-update
+```
+
+### Update Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     PUBLISHER SIDE (Us)                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Developer pushes code to main branch                        │
+│                     ↓                                           │
+│  2. GitHub Actions detects changes in plugins/push-todo/        │
+│                     ↓                                           │
+│  3. GitHub Actions runs bump-version.py                         │
+│                     ↓                                           │
+│  4. Version in plugin.json bumps (e.g., 1.2.2 → 1.2.3)         │
+│                     ↓                                           │
+│  5. GitHub Actions commits and pushes the version bump          │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+                    (GitHub repo updated)
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                      USER SIDE                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. User starts Claude Code                                     │
+│                     ↓                                           │
+│  2. Claude Code checks marketplace for updates (if enabled)     │
+│                     ↓                                           │
+│  3. Fetches plugin.json from GitHub                             │
+│                     ↓                                           │
+│  4. Compares versions: local (1.2.2) vs remote (1.2.3)         │
+│                     ↓                                           │
+│  5. If remote is newer → downloads and installs update          │
+│                     ↓                                           │
+│  6. User sees: "Plugin push-todo updated: v1.2.2 → v1.2.3"     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The Version Bump is the Signal
+
+The **only thing** the marketplace needs to detect an update is a version change in:
+```
+plugins/push-todo/.claude-plugin/plugin.json
+```
+
+```json
+{
+  "name": "push-todo",
+  "version": "1.2.3",  ← This is the signal
+  "description": "..."
+}
+```
+
+When Claude Code sees a higher version number, it triggers the update.
+
+### Plugin.json Schema (Minimal Required Fields)
+
+Claude Code's plugin schema is strict. Only these fields are valid:
+
+```json
+{
+  "name": "push-todo",
+  "version": "1.2.3",
+  "description": "Receive and work on voice tasks captured on your iPhone using the Push app"
+}
+```
+
+**Invalid fields that cause errors:**
+- `category` ❌
+- `keywords` ❌
+- `engines` ❌
+- `author` ❌
+- `repository` ❌
+- `$schema` ❌
+
+Keep the plugin.json minimal to avoid validation errors.
+
+### Automated Version Bumping
+
+We use GitHub Actions to auto-bump versions:
+
+**Trigger:** Any push to `main` that modifies files in `plugins/push-todo/` (except plugin.json itself)
+
+**Action:** Runs `scripts/bump-version.py` which:
+1. Reads current version from plugin.json
+2. Increments patch version (1.2.2 → 1.2.3)
+3. Handles overflow (1.2.9 → 1.3.0, 1.9.9 → 2.0.0)
+4. Commits and pushes the change
+
+This means: **Push code → version auto-bumps → users get update**
+
+No manual version management required.
 
 ---
 
