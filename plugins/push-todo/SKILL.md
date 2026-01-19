@@ -40,10 +40,12 @@ When the script returns "No active tasks for this project":
 - **DO NOT** automatically run `--all-projects` to check other projects
 - **DO NOT** offer to check other projects unless the user explicitly asks
 
-The user can explicitly request all projects with:
-- `/push-todo all` (with `--all-projects` flag)
+The user can explicitly request all projects by saying:
 - "Show me tasks from all projects"
-- "Check other projects"
+- "Check all my projects"
+- "Show tasks across all projects"
+
+When user explicitly asks for all projects, use the `--all-projects` flag.
 
 ## Architecture: Always Fresh
 

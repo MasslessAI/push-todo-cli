@@ -39,7 +39,6 @@ If you prefer automatic updates:
 |---------|-------------|
 | `/push-todo` | Show tasks for current project |
 | `/push-todo setup` | Connect account, check for updates, fix issues |
-| `/push-todo all` | Show tasks from all projects |
 | `/push-todo #427` | Jump directly to task #427 |
 | `/push-todo review` | Review what you worked on and mark tasks complete |
 
@@ -71,7 +70,7 @@ The `/push-todo setup` command handles everything: checks for updates, validates
 
 ## Requirements
 
-- [Push iOS app](https://pushto.do) — free, uses Sign in with Apple
+- [Push iOS app](https://pushto.do) — voice-powered task capture
 - Claude Code
 
 ---

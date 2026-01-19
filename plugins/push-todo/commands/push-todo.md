@@ -9,11 +9,12 @@ This command fetches and displays your active voice tasks from the Push iOS app.
 
 ## Usage
 
-- `/push-todo` - Show the next active task
-- `/push-todo all` - Show all active tasks
+- `/push-todo` - Show active tasks for current project
+- `/push-todo #427` - Jump directly to task #427
 - `/push-todo review` - Review existing tasks and mark completed ones
-- `/push-todo refresh` - Force refresh tasks from server
 - `/push-todo setup` - Configure your Push connection
+
+> **Note:** To see tasks from all projects, ask explicitly: "show tasks from all projects"
 
 ## Instructions
 
@@ -28,7 +29,7 @@ When this command is invoked:
 
 3. **If configured**: Fetch tasks:
    ```bash
-   source ~/.config/push/config && python3 ~/.claude/skills/push-todo/scripts/fetch_task.py
+   source ~/.config/push/config && python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py
    ```
 
 4. Present the tasks and ask which one to work on
@@ -49,7 +50,7 @@ First, recall what was worked on in this session (or the previous compacted sess
 ### Step 2: Fetch Pending Tasks
 
 ```bash
-source ~/.config/push/config && python3 ~/.claude/skills/push-todo/scripts/fetch_task.py --all --json
+source ~/.config/push/config && python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py --all --json
 ```
 
 ### Step 3: Match Session Work Against Tasks
@@ -87,7 +88,7 @@ Should I mark #701 and #427 as completed?
 ### Step 5: Mark Confirmed Tasks
 
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/fetch_task.py --mark-completed TASK_UUID
+python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py --mark-completed TASK_UUID
 ```
 
 ### Key Principle
@@ -146,7 +147,7 @@ Generate a short (5-15 words) description that captures what makes this project 
 ### Step 4: Run Setup with Keywords
 
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/setup.py \
+python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py \
   --keywords "keyword1,keyword2,keyword3,..." \
   --description "Short unique description of this project"
 ```
@@ -155,21 +156,21 @@ python3 ~/.claude/skills/push-todo/scripts/setup.py \
 
 **For a voice todo app (Push):**
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/setup.py \
+python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py \
   --keywords "push,voice,todo,whisper,ios,swiftui,recording,speech,transcription" \
   --description "Voice-powered todo app for iOS with whisper speech recognition"
 ```
 
 **For a web scraping project:**
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/setup.py \
+python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py \
   --keywords "scraper,crawler,beautifulsoup,selenium,extraction,parsing" \
   --description "Web scraping tool for data extraction"
 ```
 
 **For a game engine:**
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/setup.py \
+python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py \
   --keywords "engine,graphics,rendering,physics,ecs,vulkan,gamedev" \
   --description "Custom game engine with Vulkan renderer"
 ```
