@@ -82,11 +82,11 @@ When the user wants to see their tasks, run:
 
 ```bash
 # Fetch all tasks for current project
-python3 ~/.claude/skills/push-todo/scripts/fetch_task.py
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py"
 
 # Fetch a specific task by number (fast direct lookup)
-python3 ~/.claude/skills/push-todo/scripts/fetch_task.py 427
-python3 ~/.claude/skills/push-todo/scripts/fetch_task.py "#427"
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py" 427
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py" "#427"
 ```
 
 Note: The script reads the API key from `~/.config/push/config` automatically.
@@ -126,7 +126,7 @@ Note: Users reference tasks by their global number (`#427`), which maps to the t
 When the task is done:
 
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/fetch_task.py --mark-completed TASK_ID
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py" --mark-completed TASK_ID
 ```
 
 Confirm to the user: "Task marked as complete in Push"
@@ -166,8 +166,10 @@ Execute these steps **in order**. Stop early if a critical issue needs user acti
 #### Step 1: Check Plugin Version
 
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/setup.py --check-version
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py" --check-version
 ```
+
+> **Note:** `$CLAUDE_PLUGIN_ROOT` is set by Claude Code to the plugin's directory. Falls back to `~/.claude/skills/push-todo` for development.
 
 **JSON Response:**
 ```json
@@ -184,7 +186,7 @@ python3 ~/.claude/skills/push-todo/scripts/setup.py --check-version
 2. **Wait for user confirmation** (semantic response like "yes", "sure", "go ahead")
 3. If confirmed, run update:
    ```bash
-   python3 ~/.claude/skills/push-todo/scripts/setup.py --update
+   python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py" --update
    ```
 4. Handle update result:
    - `"status": "success"` → Continue to Step 2
@@ -197,7 +199,7 @@ python3 ~/.claude/skills/push-todo/scripts/setup.py --check-version
 #### Step 2: Validate API Key
 
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/setup.py --validate-key
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py" --validate-key
 ```
 
 **JSON Response:**
@@ -213,7 +215,7 @@ python3 ~/.claude/skills/push-todo/scripts/setup.py --validate-key
 1. Tell the user: "Your Push connection needs to be set up. I'll open a browser for Sign in with Apple."
 2. Run full setup (opens browser):
    ```bash
-   python3 ~/.claude/skills/push-todo/scripts/setup.py
+   python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py"
    ```
 3. After auth completes, continue to Step 3.
 
@@ -235,14 +237,14 @@ python3 ~/.claude/skills/push-todo/scripts/setup.py --validate-key
 
 4. **Run setup with generated values**:
    ```bash
-   python3 ~/.claude/skills/push-todo/scripts/setup.py \
+   python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py" \
      --keywords "keyword1,keyword2,keyword3" \
      --description "Short project description"
    ```
 
 **Example for Push project:**
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/setup.py \
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py" \
   --keywords "push,voice,todo,whisper,ios,swift,swiftui,swiftdata,cloudkit,realtime,supabase" \
   --description "Voice-powered todo app for iOS with realtime sync"
 ```
@@ -290,8 +292,8 @@ The setup script reads `~/.claude/plugins/known_marketplaces.json` and checks th
 
 **Manual update check:**
 ```bash
-python3 ~/.claude/skills/push-todo/scripts/setup.py --check-version
-python3 ~/.claude/skills/push-todo/scripts/setup.py --update
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py" --check-version
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/setup.py" --update
 ```
 
 ## Error Handling
