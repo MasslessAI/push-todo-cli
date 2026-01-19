@@ -142,9 +142,11 @@ When the user runs `/push-todo review`, use **session context** to find complete
 
 ## Setup Mode
 
-When `$push-todo setup` is invoked or API key is missing:
+When `/push-todo setup` is invoked or API key is missing:
 
-1. Run the setup script:
+### First-Time Setup (No API Key)
+
+1. Run the setup script without arguments:
    ```bash
    python3 ~/.claude/skills/push-todo/scripts/setup.py
    ```
@@ -152,6 +154,38 @@ When `$push-todo setup` is invoked or API key is missing:
 2. This opens a browser for Sign in with Apple authentication
 
 3. Once complete, the API key is automatically saved
+
+### Project Registration (API Key Exists)
+
+When the user runs `/push-todo setup` in a project that's already authenticated:
+
+1. **Read CLAUDE.md** to understand the project context
+
+2. **Generate keywords** - Extract 5-15 relevant keywords from CLAUDE.md:
+   - Project name and aliases
+   - Key technologies (e.g., "swift", "swiftui", "supabase")
+   - Domain terms (e.g., "voice", "todo", "sync")
+   - Keep keywords lowercase, comma-separated
+
+3. **Generate description** - Create a concise 1-sentence description:
+   - What the project does
+   - Keep under 100 characters
+
+4. **Run setup with generated values**:
+   ```bash
+   python3 ~/.claude/skills/push-todo/scripts/setup.py \
+     --keywords "keyword1,keyword2,keyword3" \
+     --description "Short project description"
+   ```
+
+**Example for Push project:**
+```bash
+python3 ~/.claude/skills/push-todo/scripts/setup.py \
+  --keywords "push,voice,todo,whisper,ios,swift,swiftui,swiftdata,cloudkit,realtime,supabase" \
+  --description "Voice-powered todo app for iOS with realtime sync"
+```
+
+**Why keywords matter:** These keywords help the AI match voice tasks to the correct project. When a user says "add dark mode to Push", the AI uses keywords to route the task to the right action.
 
 ## Task Fields
 
