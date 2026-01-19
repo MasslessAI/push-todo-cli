@@ -61,11 +61,11 @@ This ensures you always see the latest state from the Push app.
 ### CLI Options
 ```bash
 fetch_task.py [TASK_NUMBER] [--all-projects] [--pinned] [--json] [--mark-completed ID]
-  TASK_NUMBER       Fetch a specific task by number (e.g., 5 or #5) - fast direct lookup
-  --all-projects    Show tasks from ALL projects (not just current)
-  --pinned          Only show pinned (focused) tasks
-  --json            Output raw JSON format
-  --mark-completed  Mark a task as completed by UUID
+  TASK_NUMBER           Fetch a specific task by number (e.g., 5 or #5) - fast direct lookup
+  --all-projects        Show tasks from ALL projects (not just current)
+  --pinned              Only show pinned (focused) tasks
+  --json                Output raw JSON format
+  --mark-completed ID   Mark a task as completed by UUID
 ```
 
 ### Direct Task Lookup (Fast Path)
@@ -125,13 +125,29 @@ Note: Users reference tasks by their global number (`#427`), which maps to the t
 
 ## Completing a Task
 
-When the task is done:
+When the task is done, mark it complete with a summary of what was accomplished:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py" --mark-completed TASK_ID
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py" \
+  --mark-completed TASK_ID \
+  --completion-comment "Brief summary of work done"
 ```
 
-Confirm to the user: "Task marked as complete in Push"
+### Automatic Completion Summary (Agent Behavior)
+
+**You should ALWAYS include a `--completion-comment` when marking tasks complete.** This is automatic - don't ask the user, just do it. The comment appears in the Push app's timeline, helping the user remember what was done.
+
+Write a good summary:
+- **Concise**: 1-2 sentences, under 150 characters
+- **Specific**: What changed (files, features, fixes)
+- **Past tense**: "Added...", "Fixed...", "Updated...", "Implemented..."
+
+**Examples:**
+- "Added dark mode toggle with CSS variables"
+- "Fixed race condition in sync service"
+- "Refactored auth to use JWT tokens"
+
+Confirm to the user: "Task #N marked complete in Push"
 
 ## Reviewing Tasks
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Fetch and display active Push tasks.
-Version: 4.1.0 (direct task number lookup)
+Version: 4.2.0 (completion comment support)
 
 This script retrieves active tasks from the Push iOS app and outputs them
 in a format suitable for Claude Code to process.
@@ -31,6 +31,7 @@ Options:
     --all-projects     Fetch tasks from ALL projects (not just current)
     --pinned           Only show pinned (focused) tasks, or prioritize them at the top
     --mark-completed ID Mark a task as completed (syncs back to Push)
+    --completion-comment TEXT  Comment to include when marking completed (appears in Push timeline)
     --json             Output raw JSON
 
 Environment:
@@ -287,14 +288,16 @@ def fetch_task_by_number(display_number: int) -> Optional[dict]:
         raise ValueError(f"Network error: {e.reason}")
 
 
-def mark_task_completed(task_id: str) -> bool:
+def mark_task_completed(task_id: str, comment: Optional[str] = None) -> bool:
     """
     Mark a task as completed using the todo-status endpoint.
 
     This syncs the completion back to the Push iOS app via the unified hub.
+    Optionally includes a completion comment that appears in the task's timeline.
 
     Args:
         task_id: The UUID of the todo to mark as completed.
+        comment: Optional completion comment (summary of work done).
 
     Returns:
         True if successful, False otherwise.
@@ -302,11 +305,17 @@ def mark_task_completed(task_id: str) -> bool:
     api_key = get_api_key()
     url = f"{API_BASE_URL}/todo-status"
 
-    body = json.dumps({
+    payload = {
         "todoId": task_id,
         "isCompleted": True,
         "completedAt": datetime.now(timezone.utc).isoformat()
-    }).encode()
+    }
+
+    # Add completion comment if provided (appears in Push app timeline)
+    if comment:
+        payload["completionComment"] = comment
+
+    body = json.dumps(payload).encode()
 
     req = urllib.request.Request(url, data=body, method="PATCH")
     req.add_header("Authorization", f"Bearer {api_key}")
@@ -377,15 +386,18 @@ def main():
     parser.add_argument("--all-projects", action="store_true", help="Fetch tasks from ALL projects (not just current)")
     parser.add_argument("--pinned", action="store_true", help="Only show pinned tasks, or prioritize them at the top")
     parser.add_argument("--mark-completed", metavar="ID", help="Mark a task as completed")
+    parser.add_argument("--completion-comment", metavar="TEXT", help="Comment to include when marking task completed (appears in Push app timeline)")
     parser.add_argument("--json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
 
     try:
         # Handle mark-completed
         if args.mark_completed:
-            success = mark_task_completed(args.mark_completed)
+            success = mark_task_completed(args.mark_completed, args.completion_comment)
             if success:
                 print(f"Task {args.mark_completed} marked as completed")
+                if args.completion_comment:
+                    print(f"Completion note: {args.completion_comment[:100]}{'...' if len(args.completion_comment) > 100 else ''}")
             else:
                 print(f"Failed to mark task {args.mark_completed} as completed", file=sys.stderr)
                 sys.exit(1)
