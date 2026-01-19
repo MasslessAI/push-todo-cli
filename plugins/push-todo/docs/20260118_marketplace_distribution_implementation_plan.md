@@ -30,7 +30,7 @@ The current push-todo plugin uses a custom installation and update mechanism (cu
 
 Users must explicitly enable auto-update for our marketplace via:
 ```
-/plugin → Marketplaces → MasslessAI/push-claude-plugin → Enable auto-update
+/plugin → Marketplaces → MasslessAI/push-todo-cli → Enable auto-update
 ```
 
 ### Update Flow
@@ -135,7 +135,7 @@ No manual version management required.
 ### What We Have Now
 
 ```
-push-claude-plugin/
+push-todo-cli/
 ├── .claude-plugin/
 │   ├── marketplace.json    # Exists but incomplete
 │   └── plugin.json         # Exists, version 1.0.0
@@ -205,7 +205,7 @@ User                          GitHub                      Local Machine
 User                          Claude Code                 GitHub
   │                              │                          │
   │  /plugin marketplace add     │                          │
-  │  MasslessAI/push-claude-plugin                          │
+  │  MasslessAI/push-todo-cli                          │
   │─────────────────────────────>│                          │
   │                              │  Clone marketplace repo  │
   │                              │─────────────────────────>│
@@ -251,7 +251,7 @@ User                          Claude Code                 GitHub
 Current:
 ```json
 {
-  "name": "push-claude-plugin",
+  "name": "push-todo-cli",
   "version": "1.0.0",
   "plugins": [{
     "name": "push-todo",
@@ -311,7 +311,7 @@ Target (add required fields):
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/MasslessAI/push-claude-plugin"
+    "url": "https://github.com/MasslessAI/push-todo-cli"
   },
   "homepage": "https://pushto.do",
   "license": "MIT",
@@ -368,8 +368,8 @@ curl -sL https://raw.githubusercontent.com/.../install.sh | bash
 
 **New flow:**
 ```bash
-/plugin marketplace add MasslessAI/push-claude-plugin
-/plugin install push-todo@MasslessAI/push-claude-plugin
+/plugin marketplace add MasslessAI/push-todo-cli
+/plugin install push-todo@MasslessAI/push-todo-cli
 # Then: /push-todo setup
 ```
 
@@ -382,12 +382,12 @@ curl -sL https://raw.githubusercontent.com/.../install.sh | bash
 
 1. Add the Push marketplace:
    ```
-   /plugin marketplace add MasslessAI/push-claude-plugin
+   /plugin marketplace add MasslessAI/push-todo-cli
    ```
 
 2. Install the plugin:
    ```
-   /plugin install push-todo@MasslessAI/push-claude-plugin
+   /plugin install push-todo@MasslessAI/push-todo-cli
    ```
 
 3. Connect your account:
@@ -399,7 +399,7 @@ curl -sL https://raw.githubusercontent.com/.../install.sh | bash
 
 For users who prefer a one-liner:
 ```bash
-curl -sL https://raw.githubusercontent.com/MasslessAI/push-claude-plugin/main/install.sh | bash
+curl -sL https://raw.githubusercontent.com/MasslessAI/push-todo-cli/main/install.sh | bash
 ```
 
 Note: This method does not support auto-updates. Use the plugin marketplace for automatic updates.
@@ -414,8 +414,8 @@ echo "=========================================="
 echo "NOTICE: This installation method is deprecated."
 echo ""
 echo "For auto-updates, use the Claude Code marketplace instead:"
-echo "  /plugin marketplace add MasslessAI/push-claude-plugin"
-echo "  /plugin install push-todo@MasslessAI/push-claude-plugin"
+echo "  /plugin marketplace add MasslessAI/push-todo-cli"
+echo "  /plugin install push-todo@MasslessAI/push-todo-cli"
 echo ""
 echo "Continuing with legacy installation..."
 echo "=========================================="
@@ -457,8 +457,8 @@ def suggest_migration():
         print("TIP: You're using a legacy installation.")
         print("For auto-updates, migrate to the marketplace:")
         print("")
-        print("  /plugin marketplace add MasslessAI/push-claude-plugin")
-        print("  /plugin install push-todo@MasslessAI/push-claude-plugin")
+        print("  /plugin marketplace add MasslessAI/push-todo-cli")
+        print("  /plugin install push-todo@MasslessAI/push-todo-cli")
         print("="*50 + "\n")
 ```
 
@@ -539,8 +539,8 @@ jobs:
 rm -rf ~/.claude/skills/push-todo
 
 # 2. Install via marketplace
-/plugin marketplace add MasslessAI/push-claude-plugin
-/plugin install push-todo@MasslessAI/push-claude-plugin
+/plugin marketplace add MasslessAI/push-todo-cli
+/plugin install push-todo@MasslessAI/push-todo-cli
 
 # 3. Your config is preserved in ~/.config/push/
 # No need to run setup again!
@@ -556,8 +556,8 @@ No change needed. Symlinks continue to work, and you can test marketplace featur
 
 ### Test 1: Fresh Marketplace Install
 1. Remove any existing push-todo installation
-2. Run `/plugin marketplace add MasslessAI/push-claude-plugin`
-3. Run `/plugin install push-todo@MasslessAI/push-claude-plugin`
+2. Run `/plugin marketplace add MasslessAI/push-todo-cli`
+3. Run `/plugin install push-todo@MasslessAI/push-todo-cli`
 4. Verify `/push-todo` command works
 5. Verify session-start hook shows task count
 
