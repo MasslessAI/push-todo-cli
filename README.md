@@ -71,7 +71,21 @@ The `/push-todo connect` command handles everything: checks for updates, validat
 ## Requirements
 
 - [Push iOS app](https://pushto.do) — voice-powered task capture
-- Claude Code
+- Claude Code or OpenAI Codex
+
+---
+
+## OpenAI Codex Support
+
+Full feature parity with Claude Code. Install with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MasslessAI/push-todo-cli/main/codex/install-codex.sh | bash
+```
+
+Then run `$push-todo connect` to get started.
+
+**Updates:** Run `$push-todo connect` to check for updates and apply them automatically.
 
 ---
 

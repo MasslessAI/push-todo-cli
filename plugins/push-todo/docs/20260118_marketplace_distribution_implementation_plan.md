@@ -622,13 +622,127 @@ No change needed. Symlinks continue to work, and you can test marketplace featur
 
 ---
 
+## Codex Unification (2026-01-21)
+
+### Problem Identified
+
+After implementing marketplace distribution for Claude Code, we discovered Codex support was significantly behind:
+
+| Issue | Impact |
+|-------|--------|
+| Duplicate `codex/SKILL.md` | Feature drift (v1.0 vs v1.5.5) |
+| Missing v1.5 features | No direct task lookup, review mode, completion comments |
+| No update mechanism | Users stuck on old versions |
+| Version check broken | Looked for wrong files |
+
+### Solution: Single Source of Truth (DRY)
+
+Instead of maintaining two separate SKILL.md files, we now use one canonical source with path transformation:
+
+```
+BEFORE:
+  plugins/push-todo/SKILL.md  (v1.5.5, Claude Code paths)
+  codex/SKILL.md              (v1.0, Codex paths)
+
+AFTER:
+  plugins/push-todo/SKILL.md  (v1.5.5, single source)
+  [codex/SKILL.md deleted]
+```
+
+### Implementation
+
+**1. Install Script Transformation**
+
+Updated `codex/install-codex.sh` to download canonical SKILL.md and transform paths:
+
+```bash
+# Download from canonical source
+curl -sL "$BASE_URL/plugins/push-todo/SKILL.md" | \
+  sed 's|\${CLAUDE_PLUGIN_ROOT:-\$HOME/\.claude/skills/push-todo}|$HOME/.codex/skills/push-todo|g' \
+  > "$SKILLS_DIR/SKILL.md"
+```
+
+**Path transformation:**
+```
+Source:  python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py"
+         ↓ (sed)
+Target:  python3 "$HOME/.codex/skills/push-todo/scripts/fetch_task.py"
+```
+
+**2. Codex Detection in connect.py**
+
+Added Codex to installation method detection:
+
+```python
+def get_installation_method() -> str:
+    if ".claude/plugins" in str(plugin_dir):
+        return "marketplace"
+    if ".codex/skills" in str(plugin_dir):  # NEW
+        return "codex"
+    if ".claude/skills" in str(plugin_dir):
+        return "legacy"
+    # ...
+```
+
+**3. Codex Update Handler**
+
+Added update path for Codex users:
+
+```python
+def do_update() -> dict:
+    if method == "codex":
+        # Re-run Codex install script
+        subprocess.run(["bash", "-c",
+            f"curl -fsSL {CODEX_INSTALL_SCRIPT_URL} | bash"])
+```
+
+**4. Migration Hint Suppression**
+
+Codex users don't see Claude Code migration hints (they're already on the right install method).
+
+### Results
+
+| Metric | Before | After |
+|--------|--------|-------|
+| **SKILL.md files** | 2 | 1 |
+| **Codex features** | v1.0 (outdated) | v1.5.5 (current) |
+| **Codex updates** | Manual reinstall | `$push-todo connect` |
+| **Feature drift risk** | High (manual sync) | Zero (single source) |
+| **DRY compliance** | ❌ Duplicate | ✅ Single source |
+
+### Testing Verification
+
+```bash
+# Test sed transformation
+echo 'python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py"' | \
+  sed 's|\${CLAUDE_PLUGIN_ROOT:-\$HOME/\.claude/skills/push-todo}|$HOME/.codex/skills/push-todo|g'
+
+# Output: python3 "$HOME/.codex/skills/push-todo/scripts/fetch_task.py"
+# ✅ Correct transformation
+```
+
+### Files Changed (Codex Unification)
+
+| File | Action | Impact |
+|------|--------|--------|
+| `codex/SKILL.md` | Deleted | Removed 98 lines of duplicate content |
+| `codex/install-codex.sh` | Modified | Downloads from canonical source + transforms |
+| `plugins/push-todo/scripts/connect.py` | Modified | Added Codex detection + update handler |
+| `README.md` | Modified | Added Codex support section |
+
+**Commit:** `d8aecc7` - "Unify Codex and Claude Code with single SKILL.md source"
+
+### Open Questions Resolved
+
+~~**2. Codex CLI:** The `/codex` folder has a separate install script. Should we create a separate marketplace for it?~~
+   - ✅ **RESOLVED:** Codex doesn't have marketplace system. Use single SKILL.md with path transformation instead.
+
+---
+
 ## Open Questions
 
 1. **Backward Compatibility:** Should we keep curl install working indefinitely or sunset it?
    - Recommendation: Keep for 3 months, then remove
-
-2. **Codex CLI:** The `/codex` folder has a separate install script. Should we create a separate marketplace for it?
-   - Recommendation: Yes, but lower priority
 
 3. **Version Sync:** How to ensure GitHub Actions version bump and marketplace are in sync?
    - Answer: Version is only in plugin.json, marketplace reads it
