@@ -14,7 +14,7 @@ Capture coding tasks by voice on your iPhone → work on them in Claude Code.
 curl -fsSL https://raw.githubusercontent.com/MasslessAI/push-todo-cli/main/install.sh | bash
 ```
 
-Then restart Claude Code and run `/push-todo setup`.
+Then restart Claude Code and run `/push-todo connect`.
 
 ### Option B: Manual Install
 
@@ -23,7 +23,7 @@ If you prefer to run the commands yourself:
 ```
 /plugin marketplace add MasslessAI/push-todo-cli
 /plugin install push-todo@push-todo-cli
-/push-todo setup
+/push-todo connect
 ```
 
 > **Tip:** Enable auto-updates via `/plugin` → Marketplaces → push-todo-cli → Enable auto-update
@@ -35,7 +35,7 @@ If you prefer to run the commands yourself:
 | Command | Description |
 |---------|-------------|
 | `/push-todo` | Show tasks for current project |
-| `/push-todo setup` | Connect account, check for updates, fix issues |
+| `/push-todo connect` | Connect account, check for updates, fix issues |
 | `/push-todo #427` | Jump directly to task #427 |
 | `/push-todo review` | Review what you worked on and mark tasks complete |
 
@@ -60,11 +60,11 @@ Both install methods use the marketplace, so updates work the same way:
 | Setting | How Updates Work |
 |---------|------------------|
 | **Auto-update ON** | Automatic at startup |
-| **Auto-update OFF** | Run `/push-todo setup` to check |
+| **Auto-update OFF** | Run `/push-todo connect` to check |
 
 Enable auto-updates: `/plugin` → Marketplaces → push-todo-cli → Enable auto-update
 
-The `/push-todo setup` command handles everything: checks for updates, validates your connection, and registers your project.
+The `/push-todo connect` command handles everything: checks for updates, validates your connection, and registers your project.
 
 ---
 
@@ -79,7 +79,7 @@ The `/push-todo setup` command handles everything: checks for updates, validates
 
 **Most issues are fixed by running:**
 ```
-/push-todo setup
+/push-todo connect
 ```
 
 This will:

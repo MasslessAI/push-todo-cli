@@ -151,7 +151,7 @@ push-todo-cli/
 │       │   ├── check_tasks.py
 │       │   ├── check_updates.py  # BROKEN for curl installs
 │       │   ├── fetch_task.py
-│       │   └── setup.py
+│       │   └── connect.py
 │       ├── skills/
 │       │   └── push-todo/SKILL.md
 │       └── SKILL.md
@@ -363,14 +363,14 @@ fi
 **Current flow:**
 ```bash
 curl -sL https://raw.githubusercontent.com/.../install.sh | bash
-# Then: /push-todo setup
+# Then: /push-todo connect
 ```
 
 **New flow:**
 ```bash
 /plugin marketplace add MasslessAI/push-todo-cli
 /plugin install push-todo@MasslessAI/push-todo-cli
-# Then: /push-todo setup
+# Then: /push-todo connect
 ```
 
 #### 3.1 Update README.md
@@ -392,7 +392,7 @@ curl -sL https://raw.githubusercontent.com/.../install.sh | bash
 
 3. Connect your account:
    ```
-   /push-todo setup
+   /push-todo connect
    ```
 
 ### Option 2: Quick Install (Legacy)
@@ -424,16 +424,16 @@ sleep 2
 # ... rest of script
 ```
 
-### Phase 4: Setup Command Updates
+### Phase 4: Connect Command Updates
 
-#### 4.1 `/push-todo setup` Should Handle Everything
+#### 4.1 `/push-todo connect` Should Handle Everything
 
-The setup command should:
+The connect command should:
 1. Check if installed via marketplace vs curl
 2. For curl installs, suggest migrating to marketplace
 3. Handle API key configuration
 
-Update `/plugins/push-todo/scripts/setup.py` to add marketplace migration hint:
+Update `/plugins/push-todo/scripts/connect.py` to add marketplace migration hint:
 
 ```python
 def check_installation_method():
@@ -543,7 +543,7 @@ rm -rf ~/.claude/skills/push-todo
 /plugin install push-todo@MasslessAI/push-todo-cli
 
 # 3. Your config is preserved in ~/.config/push/
-# No need to run setup again!
+# No need to run connect again!
 ```
 
 ### For Development (Symlink) Users
@@ -570,11 +570,11 @@ No change needed. Symlinks continue to work, and you can test marketplace featur
 
 ### Test 3: Legacy Install Warning
 1. Install via curl
-2. Run `/push-todo setup`
+2. Run `/push-todo connect`
 3. Verify migration hint is displayed
 
 ### Test 4: Config Preservation
-1. Install, run setup, verify tasks appear
+1. Install, run connect, verify tasks appear
 2. Uninstall
 3. Reinstall via marketplace
 4. Verify tasks still appear (config preserved)
@@ -615,7 +615,7 @@ No change needed. Symlinks continue to work, and you can test marketplace featur
 | `/plugins/push-todo/.claude-plugin/plugin.json` | Modify | Add required fields |
 | `/plugins/push-todo/scripts/check_updates.py` | Delete | No longer needed |
 | `/plugins/push-todo/hooks/session-start.sh` | Modify | Remove update check |
-| `/plugins/push-todo/scripts/setup.py` | Modify | Add migration hint |
+| `/plugins/push-todo/scripts/connect.py` | Modify | Add migration hint |
 | `/scripts/bump-version.py` | Modify | Single source of truth |
 | `/README.md` | Modify | New install instructions |
 | `/install.sh` | Modify | Add deprecation notice |

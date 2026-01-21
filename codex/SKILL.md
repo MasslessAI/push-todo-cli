@@ -66,13 +66,13 @@ python3 ~/.codex/skills/push-todo/scripts/fetch_task.py --mark-completed TASK_ID
 
 Confirm to the user: "Task marked as complete in Push"
 
-## Setup Mode
+## Connect Mode
 
-When `$push-todo setup` is invoked or API key is missing:
+When `$push-todo connect` is invoked or API key is missing:
 
-1. Run the setup script:
+1. Run the connect script:
    ```bash
-   python3 ~/.codex/skills/push-todo/scripts/setup.py
+   python3 ~/.codex/skills/push-todo/scripts/connect.py
    ```
 
 2. This opens a browser for Sign in with Apple authentication
@@ -93,4 +93,4 @@ Each task includes:
 
 If the API returns an error:
 - Check if PUSH_API_KEY is set in ~/.config/push/config
-- Suggest: "Run `$push-todo setup` to configure your Push connection"
+- Suggest: "Run `$push-todo connect` to configure your Push connection"
