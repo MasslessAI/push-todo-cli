@@ -71,7 +71,7 @@ The `/push-todo connect` command handles everything: checks for updates, validat
 ## Requirements
 
 - [Push iOS app](https://pushto.do) — voice-powered task capture
-- Claude Code or OpenAI Codex
+- Claude Code, OpenAI Codex, or Clawdbot
 
 ---
 
@@ -86,6 +86,20 @@ curl -fsSL https://raw.githubusercontent.com/MasslessAI/push-todo-cli/main/codex
 Then run `$push-todo connect` to get started.
 
 **Updates:** Run `$push-todo connect` to check for updates and apply them automatically.
+
+---
+
+## Clawdbot Support
+
+Full feature parity with Claude Code. Install with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MasslessAI/push-todo-cli/main/clawdbot/install-clawdbot.sh | bash
+```
+
+Then say `/push-todo connect` in Clawdbot to get started.
+
+**Updates:** Say `/push-todo connect` to check for updates and apply them automatically.
 
 ---
 

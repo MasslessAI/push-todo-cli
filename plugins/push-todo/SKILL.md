@@ -9,6 +9,7 @@ description: |
   - "Voice notes I captured" or "what did I record"
   - "My voice tasks" or "voice memos"
   - Following up on "[Push]" notification
+metadata: {"clawdbot":{"requires":{"bins":["python3"]},"homepage":"https://pushto.do"}}
 ---
 
 # Push Voice Tasks
