@@ -925,7 +925,16 @@ def main():
         show_status()
         return
 
-    client_type = args.client
+    # Auto-detect client type from installation method if not explicitly specified
+    # This ensures Clawdbot users don't need to remember --client clawdbot
+    method = get_installation_method()
+    if method == "codex":
+        client_type = "openai-codex"
+    elif method == "clawdbot":
+        client_type = "clawdbot"
+    else:
+        client_type = args.client  # Use explicit arg or default for Claude Code
+
     client_names = {
         "claude-code": "Claude Code",
         "openai-codex": "OpenAI Codex",
