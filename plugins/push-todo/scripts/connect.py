@@ -152,11 +152,21 @@ def check_version() -> dict:
     Check if an update is available.
 
     Returns dict with:
-        - status: "up_to_date", "update_available", "unknown"
+        - status: "up_to_date", "update_available", "dev_installation", "unknown"
         - local_version: Current local version
-        - remote_version: Latest remote version
+        - remote_version: Latest remote version (None for dev_installation)
         - message: Human-readable message
     """
+    # Check for dev installation FIRST to avoid confusing "update available" → "skipped" flow
+    if get_installation_method() == "development":
+        local = get_local_version()
+        return {
+            "status": "dev_installation",
+            "local_version": local,
+            "remote_version": None,
+            "message": f"Dev installation (v{local}) - use `cd ~/.claude/skills/push-todo && git pull` to update"
+        }
+
     local = get_local_version()
     remote = get_remote_version()
 
