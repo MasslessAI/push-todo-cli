@@ -61,24 +61,24 @@ This ensures you always see the latest state from the Push app.
 
 ### CLI Options
 ```bash
-fetch_task.py [TASK_NUMBER] [--all-projects] [--later] [--include-later] [--json] [--mark-completed ID]
+fetch_task.py [TASK_NUMBER] [--all-projects] [--backlog] [--include-backlog] [--json] [--mark-completed ID]
   TASK_NUMBER           Fetch a specific task by number (e.g., 5 or #5) - fast direct lookup
   --all-projects        Show tasks from ALL projects (not just current)
-  --later               Only show tasks marked for "later" (backlog items)
-  --include-later       Include backlog items in the active list (by default they're excluded)
+  --backlog             Only show backlog items (deferred tasks)
+  --include-backlog     Include backlog items in the active list (by default they're excluded)
   --json                Output raw JSON format
   --mark-completed ID   Mark a task as completed by UUID
 ```
 
-### Backlog (Later) Items
+### Backlog Items
 
-By default, `/push-todo` returns only **active** tasks - items the user wants to work on now. Tasks marked as "later" (backlog) in the Push app are excluded from the default view.
+By default, `/push-todo` returns only **active** tasks - items the user wants to work on now. Tasks marked as backlog in the Push app are excluded from the default view.
 
 | Command | What It Shows |
 |---------|---------------|
 | `/push-todo` | Active tasks only (default - excludes backlog) |
-| `/push-todo --later` | Only backlog items |
-| `/push-todo --include-later` | All tasks (active + backlog) |
+| `/push-todo --backlog` | Only backlog items |
+| `/push-todo --include-backlog` | All tasks (active + backlog) |
 
 ### Direct Task Lookup (Fast Path)
 
@@ -304,12 +304,12 @@ Each task includes:
 - `transcript`: Original voice transcript (if user wants raw input)
 - `project_hint`: Human-readable project name (e.g., "Push", "AppleWhisper")
 - `git_remote`: Normalized git remote URL for project scoping (e.g., "github.com/user/repo")
-- `is_later`: Boolean indicating if the task is in the backlog (marked for "later")
+- `is_backlog`: Boolean indicating if the task is in the backlog (deferred)
 - `created_at`: When the task was captured
 
 **Global Numbers:** Every task has a permanent `display_number` that matches the Push app. Always use `#N` format when referencing tasks.
 
-**Backlog Items:** Tasks marked for "later" in the Push app are excluded from the default view. Use `--later` to see only backlog items, or `--include-later` to see all tasks.
+**Backlog Items:** Tasks in the backlog are excluded from the default view. Use `--backlog` to see only backlog items, or `--include-backlog` to see all tasks.
 
 ## Updates
 
