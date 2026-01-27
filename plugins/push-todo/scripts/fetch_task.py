@@ -228,7 +228,7 @@ def fetch_tasks_from_api(git_remote: Optional[str] = None, later_filter: Optiona
                     "transcript": t.get("originalTranscript"),
                     "project_hint": None,  # Not included in synced-todos response
                     "git_remote": git_remote,  # Store for reference (may be None for all-projects)
-                    "is_later": t.get("isFocused", False),  # "Later" status (renamed from pinned)
+                    "is_later": t.get("isBacklog", False),  # "Later" status - items in the backlog
                     "created_at": t.get("createdAt"),
                 }
                 for t in todos
@@ -297,7 +297,7 @@ def fetch_task_by_number(display_number: int) -> Optional[dict]:
                 "transcript": t.get("originalTranscript"),
                 "project_hint": None,
                 "git_remote": None,
-                "is_later": t.get("isFocused", False),  # "Later" status (renamed from pinned)
+                "is_later": t.get("isBacklog", False),  # "Later" status - items in the backlog
                 "created_at": t.get("createdAt"),
             }
     except urllib.error.HTTPError as e:

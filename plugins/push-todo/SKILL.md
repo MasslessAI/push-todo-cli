@@ -61,13 +61,24 @@ This ensures you always see the latest state from the Push app.
 
 ### CLI Options
 ```bash
-fetch_task.py [TASK_NUMBER] [--all-projects] [--pinned] [--json] [--mark-completed ID]
+fetch_task.py [TASK_NUMBER] [--all-projects] [--later] [--include-later] [--json] [--mark-completed ID]
   TASK_NUMBER           Fetch a specific task by number (e.g., 5 or #5) - fast direct lookup
   --all-projects        Show tasks from ALL projects (not just current)
-  --pinned              Only show pinned (focused) tasks
+  --later               Only show tasks marked for "later" (backlog items)
+  --include-later       Include backlog items in the active list (by default they're excluded)
   --json                Output raw JSON format
   --mark-completed ID   Mark a task as completed by UUID
 ```
+
+### Backlog (Later) Items
+
+By default, `/push-todo` returns only **active** tasks - items the user wants to work on now. Tasks marked as "later" (backlog) in the Push app are excluded from the default view.
+
+| Command | What It Shows |
+|---------|---------------|
+| `/push-todo` | Active tasks only (default - excludes backlog) |
+| `/push-todo --later` | Only backlog items |
+| `/push-todo --include-later` | All tasks (active + backlog) |
 
 ### Direct Task Lookup (Fast Path)
 
@@ -94,12 +105,12 @@ python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_tas
 
 Note: The script reads the API key from `~/.config/push/config` automatically.
 
-This returns all active tasks for the current project. Present them using the **global display number** (same as shown in the Push app):
+This returns all active tasks for the current project (backlog items excluded by default). Present them using the **global display number** (same as shown in the Push app):
 
 ```
 You have N active tasks from Push:
 
-#427 📌 **[Summary]**
+#427 **[Summary]**
    Details: [First 200 chars of content]
 
 #351 **[Summary]**
@@ -293,12 +304,12 @@ Each task includes:
 - `transcript`: Original voice transcript (if user wants raw input)
 - `project_hint`: Human-readable project name (e.g., "Push", "AppleWhisper")
 - `git_remote`: Normalized git remote URL for project scoping (e.g., "github.com/user/repo")
-- `is_focused`: Boolean indicating if the task is pinned/focused (prioritized)
+- `is_later`: Boolean indicating if the task is in the backlog (marked for "later")
 - `created_at`: When the task was captured
 
 **Global Numbers:** Every task has a permanent `display_number` that matches the Push app. Always use `#N` format when referencing tasks.
 
-**Pinned Tasks:** Tasks marked as pinned in the Push app will appear with a 📌 indicator and are automatically sorted to the top of the list. Use `--pinned` to filter to only pinned tasks.
+**Backlog Items:** Tasks marked for "later" in the Push app are excluded from the default view. Use `--later` to see only backlog items, or `--include-later` to see all tasks.
 
 ## Updates
 
