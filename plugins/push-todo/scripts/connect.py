@@ -493,7 +493,8 @@ def register_project(
             if data.get("success"):
                 return {
                     "status": "success",
-                    "action_name": data.get("action_name", "Unknown"),
+                    # Use normalized_name (actual stored name) instead of action_name (legacy display format)
+                    "action_name": data.get("normalized_name") or data.get("action_name", "Unknown"),
                     "created": data.get("created", True),
                     "message": data.get("message", ""),
                 }
@@ -637,7 +638,8 @@ def do_full_device_auth(client_type: str = "claude-code") -> dict:
             if result["status"] == "authorized":
                 api_key = result.get("api_key")
                 email = result.get("email", "Unknown")
-                action_name = result.get("action_name", client_name)
+                # Use normalized_name (actual stored name) instead of action_name (legacy display format)
+                action_name = result.get("normalized_name") or result.get("action_name", client_name)
 
                 if api_key:
                     return {
