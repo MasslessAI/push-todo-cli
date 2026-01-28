@@ -62,6 +62,10 @@ except ImportError:
 
 # ==================== Configuration ====================
 
+# Daemon version - increment this when making breaking changes
+# that require daemon restart (e.g., new features, bug fixes)
+DAEMON_VERSION = "2.0.0"  # 2.0.0 = Global mode with machine-specific worktrees
+
 API_BASE_URL = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
 POLL_INTERVAL = 30  # seconds
 
@@ -101,6 +105,7 @@ CERTAINTY_LOW_THRESHOLD = 0.4   # < 0.4: Request clarification
 
 PID_FILE = Path.home() / ".push" / "daemon.pid"
 LOG_FILE = Path.home() / ".push" / "daemon.log"
+VERSION_FILE = Path.home() / ".push" / "daemon.version"
 CONFIG_FILE = Path.home() / ".config" / "push" / "config"
 
 # Track running tasks to avoid duplicates
@@ -410,9 +415,36 @@ def get_project_path_for_task(git_remote: Optional[str]) -> Optional[str]:
     return None
 
 
+def get_worktree_suffix() -> str:
+    """
+    Get a short machine-specific suffix for worktree names.
+
+    This prevents conflicts when multiple Macs work on the same task
+    (e.g., after a stale claim timeout).
+
+    Returns:
+        8-char machine identifier suffix (e.g., "a1b2c3d4")
+    """
+    if GLOBAL_MODE_ENABLED and get_machine_id:
+        # Extract the random suffix from machine_id (last 8 chars after hyphen)
+        machine_id = get_machine_id()
+        if "-" in machine_id:
+            return machine_id.split("-")[-1][:8]
+        return machine_id[:8]
+    return "local"
+
+
 def get_worktree_path(display_number: int, project_path: Optional[str] = None) -> Path:
     """
     Get the worktree path for a task.
+
+    Branch/worktree naming: push-{display_number}-{machine_suffix}
+    Example: push-123-a1b2c3d4
+
+    This prevents conflicts when:
+    - Mac A creates push-123-aaaa, crashes
+    - Task times out, returns to queued
+    - Mac B claims it, creates push-123-bbbb (no conflict!)
 
     Args:
         display_number: Task display number
@@ -421,12 +453,15 @@ def get_worktree_path(display_number: int, project_path: Optional[str] = None) -
     Returns:
         Path where worktree should be created
     """
+    suffix = get_worktree_suffix()
+    worktree_name = f"push-{display_number}-{suffix}"
+
     if project_path:
         # Global mode: worktree in parent of project directory
-        return Path(project_path).parent / f"push-{display_number}"
+        return Path(project_path).parent / worktree_name
     else:
         # Legacy mode: worktree in parent of current working directory
-        return Path.cwd().parent / f"push-{display_number}"
+        return Path.cwd().parent / worktree_name
 
 
 def create_worktree(display_number: int, project_path: Optional[str] = None) -> Optional[Path]:
@@ -440,7 +475,8 @@ def create_worktree(display_number: int, project_path: Optional[str] = None) -> 
     Returns:
         Worktree path if successful, None if failed
     """
-    branch = f"push-{display_number}"
+    suffix = get_worktree_suffix()
+    branch = f"push-{display_number}-{suffix}"
     worktree_path = get_worktree_path(display_number, project_path)
 
     if worktree_path.exists():
@@ -635,8 +671,9 @@ If you need to understand the codebase, start by reading the CLAUDE.md file if i
             text=True,
         )
 
-        # Track the running process
+        # Track the running process and project path (for cleanup)
         running_tasks[display_num] = proc
+        task_project_paths[display_num] = project_path
 
         mode_desc = "planning mode" if execution_mode == "planning" else "standard mode"
         log(f"Started Claude for task #{display_num} in {mode_desc} (PID: {proc.pid})")
@@ -644,6 +681,55 @@ If you need to understand the codebase, start by reading the CLAUDE.md file if i
     except Exception as e:
         log(f"Error starting Claude for task #{display_num}: {e}")
         update_task_status(display_num, "failed", error=str(e))
+
+
+def cleanup_worktree(display_number: int, project_path: Optional[str] = None):
+    """
+    Clean up worktree after task completion.
+
+    Args:
+        display_number: Task display number
+        project_path: Project path (for determining git cwd)
+    """
+    worktree_path = get_worktree_path(display_number, project_path)
+
+    if not worktree_path.exists():
+        return
+
+    git_cwd = project_path if project_path else str(Path.cwd())
+
+    try:
+        # Remove the worktree
+        result = subprocess.run(
+            ["git", "worktree", "remove", str(worktree_path), "--force"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=git_cwd
+        )
+
+        if result.returncode == 0:
+            log(f"Cleaned up worktree: {worktree_path}")
+        else:
+            log(f"Failed to cleanup worktree {worktree_path}: {result.stderr}")
+
+        # Also try to delete the branch
+        suffix = get_worktree_suffix()
+        branch = f"push-{display_number}-{suffix}"
+        subprocess.run(
+            ["git", "branch", "-D", branch],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=git_cwd
+        )
+
+    except Exception as e:
+        log(f"Worktree cleanup error: {e}")
+
+
+# Track project paths for cleanup (display_number -> project_path)
+task_project_paths: Dict[int, Optional[str]] = {}
 
 
 def check_running_tasks():
@@ -667,9 +753,13 @@ def check_running_tasks():
                 stderr = proc.stderr.read() if proc.stderr else ""
                 update_task_status(display_num, "failed", error=f"Exit code {retcode}: {stderr[:200]}")
 
-    # Remove completed tasks from tracking
+    # Remove completed tasks from tracking and clean up worktrees
     for display_num in completed:
         del running_tasks[display_num]
+
+        # Clean up worktree
+        project_path = task_project_paths.pop(display_num, None)
+        cleanup_worktree(display_num, project_path)
 
 
 # ==================== Signal Handling ====================
@@ -704,8 +794,9 @@ def main():
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # Write PID file
+    # Write PID file and version file
     PID_FILE.write_text(str(os.getpid()))
+    VERSION_FILE.write_text(DAEMON_VERSION)
 
     log("=" * 60)
     if GLOBAL_MODE_ENABLED:
@@ -729,6 +820,16 @@ def main():
             for remote, path in projects.items():
                 log(f"  - {remote}")
                 log(f"    -> {path}")
+
+            # Validate paths exist
+            invalid = registry.validate_paths()
+            if invalid:
+                log("")
+                log("⚠️  WARNING: Some project paths are invalid:")
+                for entry in invalid:
+                    log(f"  - {entry['git_remote']}: {entry['reason']}")
+                    log(f"    Path: {entry['local_path']}")
+                log("Run '/push-todo connect' in those projects to re-register")
         else:
             log("No projects registered yet")
             log("Run '/push-todo connect' in your project directories")

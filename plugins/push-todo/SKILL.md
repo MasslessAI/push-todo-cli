@@ -375,6 +375,12 @@ Push includes a background daemon that automatically executes queued tasks. The 
 3. **Multi-Mac Coordination:** If you have daemons on multiple Macs:
    - Uses atomic task claiming to prevent duplicate execution
    - Each Mac has a unique machine ID stored in `~/.config/push/machine_id`
+   - Worktrees include machine ID suffix to prevent conflicts (e.g., `push-123-a1b2c3d4`)
+
+4. **Auto-Upgrade:** The daemon self-heals and auto-upgrades:
+   - Daemon version is tracked in `~/.push/daemon.version`
+   - On any `/push-todo` command, if the running daemon is outdated, it auto-restarts
+   - Path validation warns about moved/deleted project directories
 
 ### Registering Multiple Projects
 
@@ -423,4 +429,5 @@ tail -f ~/.push/daemon.log
 | `~/.config/push/projects.json` | Project registry (git_remote → local_path) |
 | `~/.config/push/machine_id` | Unique machine identifier |
 | `~/.push/daemon.pid` | Daemon process ID |
+| `~/.push/daemon.version` | Daemon version (for auto-upgrade) |
 | `~/.push/daemon.log` | Daemon log file |

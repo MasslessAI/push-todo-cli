@@ -14,11 +14,32 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Daemon configuration
 DAEMON_SCRIPT = Path(__file__).parent / "daemon.py"
 DAEMON_PID = Path.home() / ".push" / "daemon.pid"
 DAEMON_LOG = Path.home() / ".push" / "daemon.log"
+DAEMON_VERSION_FILE = Path.home() / ".push" / "daemon.version"
+
+# Import daemon version for comparison
+EXPECTED_DAEMON_VERSION = None
+try:
+    # Parse DAEMON_VERSION from daemon.py without executing it
+    with open(DAEMON_SCRIPT, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("DAEMON_VERSION") and "=" in line:
+                # Parse: DAEMON_VERSION = "2.0.0"  # comment
+                value_part = line.split("=", 1)[1].strip()
+                # Remove inline comment if present
+                if "#" in value_part:
+                    value_part = value_part.split("#")[0].strip()
+                # Extract the quoted string
+                EXPECTED_DAEMON_VERSION = value_part.strip('"').strip("'")
+                break
+except Exception:
+    pass
 
 # Check if global mode is available
 _script_dir = str(Path(__file__).parent)
@@ -46,6 +67,39 @@ def is_daemon_running() -> bool:
     except (ValueError, OSError, ProcessLookupError):
         # PID file corrupted, process dead, or no permission
         return False
+
+
+def get_running_daemon_version() -> Optional[str]:
+    """Get the version of the currently running daemon."""
+    if not DAEMON_VERSION_FILE.exists():
+        return None
+    try:
+        return DAEMON_VERSION_FILE.read_text().strip()
+    except Exception:
+        return None
+
+
+def is_daemon_outdated() -> bool:
+    """
+    Check if the running daemon is outdated compared to the script version.
+
+    Returns:
+        True if daemon is running but has an older version
+    """
+    if not EXPECTED_DAEMON_VERSION:
+        # Can't determine expected version, assume not outdated
+        return False
+
+    if not is_daemon_running():
+        return False
+
+    running_version = get_running_daemon_version()
+    if not running_version:
+        # No version file = old daemon, definitely outdated
+        return True
+
+    # Compare versions (simple string comparison works for semver)
+    return running_version != EXPECTED_DAEMON_VERSION
 
 
 def start_daemon() -> int:
@@ -111,15 +165,27 @@ def stop_daemon() -> bool:
 
 def ensure_daemon_running() -> bool:
     """
-    Ensure daemon is running. Start if needed.
+    Ensure daemon is running with the correct version. Start or restart if needed.
     Returns True if daemon is now running.
 
     This is THE self-healing function. Call it at the top of every script.
+
+    Auto-upgrade behavior:
+    - If daemon is not running → start it
+    - If daemon is running but outdated → stop and restart with new version
+    - If daemon is running and current → do nothing
 
     Usage:
         from daemon_health import ensure_daemon_running
         ensure_daemon_running()
     """
+    # Check if daemon is running but outdated
+    if is_daemon_outdated():
+        running_version = get_running_daemon_version() or "unknown"
+        print(f"[Push] Daemon outdated ({running_version} → {EXPECTED_DAEMON_VERSION}), restarting...", file=sys.stderr)
+        stop_daemon()
+        # Fall through to start new daemon
+
     if is_daemon_running():
         return True
 
@@ -151,6 +217,9 @@ def get_daemon_status() -> dict:
         - log_file: str
         - mode: "global" or "legacy"
         - registered_projects: int (count, global mode only)
+        - version: str or None (running daemon version)
+        - expected_version: str or None (expected version from script)
+        - outdated: bool (whether daemon needs restart)
     """
     mode = "global" if GLOBAL_MODE_AVAILABLE else "legacy"
     registered_projects = 0
@@ -162,6 +231,8 @@ def get_daemon_status() -> dict:
         except Exception:
             pass
 
+    running_version = get_running_daemon_version()
+
     if not is_daemon_running():
         return {
             "running": False,
@@ -170,6 +241,9 @@ def get_daemon_status() -> dict:
             "log_file": str(DAEMON_LOG),
             "mode": mode,
             "registered_projects": registered_projects,
+            "version": None,
+            "expected_version": EXPECTED_DAEMON_VERSION,
+            "outdated": False,
         }
 
     pid = int(DAEMON_PID.read_text().strip())
@@ -196,6 +270,9 @@ def get_daemon_status() -> dict:
         "log_file": str(DAEMON_LOG),
         "mode": mode,
         "registered_projects": registered_projects,
+        "version": running_version,
+        "expected_version": EXPECTED_DAEMON_VERSION,
+        "outdated": is_daemon_outdated(),
     }
 
 
@@ -217,8 +294,15 @@ if __name__ == "__main__":
     elif args.status:
         status = get_daemon_status()
         if status["running"]:
-            print(f"Daemon RUNNING (PID: {status['pid']}, uptime: {status['uptime']})")
+            version_info = f"v{status['version']}" if status['version'] else "unknown version"
+            print(f"Daemon RUNNING (PID: {status['pid']}, uptime: {status['uptime']}, {version_info})")
+            print(f"Mode: {status['mode'].upper()}")
+            if status['outdated']:
+                print(f"⚠️  OUTDATED: {status['version']} → {status['expected_version']}")
+                print("   Will auto-restart on next /push-todo command")
             print(f"Log file: {status['log_file']}")
+            if status['mode'] == 'global':
+                print(f"Registered projects: {status['registered_projects']}")
         else:
             print("Daemon NOT RUNNING")
             print("(Will auto-start on next /push-todo command)")
