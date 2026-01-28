@@ -45,13 +45,15 @@ def start_daemon() -> int:
     DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
 
     # Open log file for appending
+    # Start from CURRENT directory (must be a git repo for worktrees to work)
+    cwd = os.getcwd()
     with open(DAEMON_LOG, "a") as log_file:
         proc = subprocess.Popen(
             [sys.executable, str(DAEMON_SCRIPT)],
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,  # Detach from parent process group
-            cwd=str(Path.home()),  # Run from home dir
+            cwd=cwd,  # Run from current git repo
         )
 
     # Write PID file
