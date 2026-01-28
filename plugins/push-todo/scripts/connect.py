@@ -35,6 +35,9 @@ from typing import Optional
 # Self-healing daemon: auto-starts on any /push-todo command
 from daemon_health import ensure_daemon_running
 
+# Project registry for global daemon routing
+from project_registry import get_registry
+
 # Configuration
 API_BASE = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
 ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4dXpxY2JxaGlheG1maXR6eGxvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzU2OTY5MzQsImV4cCI6MjA1MTI3MjkzNH0.4Nm5_ABkgJCrrFc-bVzbx8qAp-SQo92HKziH7TBgspo"
@@ -439,6 +442,80 @@ def get_git_remote() -> Optional[str]:
         return None
     except Exception:
         return None
+
+
+def normalize_git_remote(url: Optional[str]) -> Optional[str]:
+    """
+    Normalize git remote URL to canonical format: github.com/user/repo
+
+    Handles:
+        - git@github.com:user/repo.git → github.com/user/repo
+        - https://github.com/user/repo.git → github.com/user/repo
+        - https://github.com/user/repo → github.com/user/repo
+        - ssh://git@github.com/user/repo.git → github.com/user/repo
+
+    Returns:
+        Normalized URL or None if not a valid git URL
+    """
+    if not url:
+        return None
+
+    # Remove trailing .git
+    if url.endswith(".git"):
+        url = url[:-4]
+
+    # Handle SSH format: git@github.com:user/repo
+    if url.startswith("git@"):
+        # git@github.com:user/repo → github.com/user/repo
+        parts = url[4:].split(":", 1)
+        if len(parts) == 2:
+            return f"{parts[0]}/{parts[1]}"
+
+    # Handle SSH URL format: ssh://git@github.com/user/repo
+    if url.startswith("ssh://"):
+        url = url[6:]  # Remove ssh://
+        if url.startswith("git@"):
+            url = url[4:]  # Remove git@
+        return url
+
+    # Handle HTTPS format: https://github.com/user/repo
+    if url.startswith("https://"):
+        return url[8:]  # Remove https://
+
+    # Handle HTTP format: http://github.com/user/repo
+    if url.startswith("http://"):
+        return url[7:]  # Remove http://
+
+    # Return as-is if no recognized format
+    return url
+
+
+def register_project_locally(git_remote_raw: Optional[str], local_path: str) -> bool:
+    """
+    Register project in local registry for global daemon routing.
+
+    This saves the git_remote → local_path mapping so the daemon can
+    route tasks from any project to the correct directory.
+
+    Args:
+        git_remote_raw: Raw git remote URL (will be normalized)
+        local_path: Absolute local path to the project
+
+    Returns:
+        True if newly registered, False if updated existing
+    """
+    if not git_remote_raw:
+        # No git remote - can't register without identifier
+        return False
+
+    git_remote = normalize_git_remote(git_remote_raw)
+    if not git_remote:
+        return False
+
+    registry = get_registry()
+    is_new = registry.register(git_remote, local_path)
+
+    return is_new
 
 
 # ============================================================================
@@ -988,12 +1065,25 @@ def main():
         )
 
         if result["status"] == "success":
+            # Register in local project registry for global daemon routing
+            git_remote_raw = get_git_remote()
+            local_path = get_project_path()
+            is_new_local = register_project_locally(git_remote_raw, local_path)
+
             print()
             print("  " + "=" * 40)
             if result["created"]:
                 print(f'  Created action: "{result["action_name"]}"')
             else:
                 print(f'  Found existing action: "{result["action_name"]}"')
+
+            # Show local registry status
+            if git_remote_raw:
+                normalized = normalize_git_remote(git_remote_raw)
+                if is_new_local:
+                    print(f"  Local path registered: {local_path}")
+                else:
+                    print(f"  Local path updated: {local_path}")
             print("  " + "=" * 40)
             print()
             if result["created"]:
@@ -1030,6 +1120,11 @@ def main():
     # Save credentials
     save_config(result["api_key"], result["email"])
 
+    # Register in local project registry for global daemon routing
+    git_remote_raw = get_git_remote()
+    local_path = get_project_path()
+    is_new_local = register_project_locally(git_remote_raw, local_path)
+
     # Show success
     print()
     print("  " + "=" * 40)
@@ -1038,6 +1133,13 @@ def main():
     else:
         print(f'  Connected as {result["email"]}')
     print(f'  Created action: "{result["action_name"]}"')
+
+    # Show local registry status
+    if git_remote_raw:
+        if is_new_local:
+            print(f"  Local path registered: {local_path}")
+        else:
+            print(f"  Local path updated: {local_path}")
     print("  " + "=" * 40)
     print()
     print("  Your iOS app will sync this automatically.")

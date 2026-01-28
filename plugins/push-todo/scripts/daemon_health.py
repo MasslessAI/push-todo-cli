@@ -20,6 +20,18 @@ DAEMON_SCRIPT = Path(__file__).parent / "daemon.py"
 DAEMON_PID = Path.home() / ".push" / "daemon.pid"
 DAEMON_LOG = Path.home() / ".push" / "daemon.log"
 
+# Check if global mode is available
+_script_dir = str(Path(__file__).parent)
+if _script_dir not in sys.path:
+    sys.path.insert(0, _script_dir)
+
+try:
+    from project_registry import get_registry
+    GLOBAL_MODE_AVAILABLE = True
+except ImportError:
+    GLOBAL_MODE_AVAILABLE = False
+    get_registry = None
+
 
 def is_daemon_running() -> bool:
     """Check if daemon is running via PID file and process check."""
@@ -40,20 +52,36 @@ def start_daemon() -> int:
     """
     Start daemon in background.
     Returns PID of started daemon.
+
+    Global Mode (GLOBAL_MODE_AVAILABLE=True):
+        Starts from home directory. Daemon uses project registry to
+        route tasks to correct projects.
+
+    Legacy Mode (GLOBAL_MODE_AVAILABLE=False):
+        Starts from current directory. Daemon only handles tasks for
+        the current project.
     """
     # Ensure log directory exists
     DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
 
+    # Determine working directory for daemon
+    if GLOBAL_MODE_AVAILABLE:
+        # Global mode: start from home directory
+        # Daemon will use project registry to find project paths
+        cwd = str(Path.home())
+    else:
+        # Legacy mode: start from current directory
+        # Daemon will only handle tasks for current project
+        cwd = os.getcwd()
+
     # Open log file for appending
-    # Start from CURRENT directory (must be a git repo for worktrees to work)
-    cwd = os.getcwd()
     with open(DAEMON_LOG, "a") as log_file:
         proc = subprocess.Popen(
             [sys.executable, str(DAEMON_SCRIPT)],
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,  # Detach from parent process group
-            cwd=cwd,  # Run from current git repo
+            cwd=cwd,
         )
 
     # Write PID file
@@ -121,13 +149,27 @@ def get_daemon_status() -> dict:
         - pid: int or None
         - uptime: str (e.g., "2h 30m") or None
         - log_file: str
+        - mode: "global" or "legacy"
+        - registered_projects: int (count, global mode only)
     """
+    mode = "global" if GLOBAL_MODE_AVAILABLE else "legacy"
+    registered_projects = 0
+
+    if GLOBAL_MODE_AVAILABLE and get_registry:
+        try:
+            registry = get_registry()
+            registered_projects = registry.project_count()
+        except Exception:
+            pass
+
     if not is_daemon_running():
         return {
             "running": False,
             "pid": None,
             "uptime": None,
             "log_file": str(DAEMON_LOG),
+            "mode": mode,
+            "registered_projects": registered_projects,
         }
 
     pid = int(DAEMON_PID.read_text().strip())
@@ -152,6 +194,8 @@ def get_daemon_status() -> dict:
         "pid": pid,
         "uptime": uptime,
         "log_file": str(DAEMON_LOG),
+        "mode": mode,
+        "registered_projects": registered_projects,
     }
 
 

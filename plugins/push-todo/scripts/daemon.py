@@ -49,6 +49,17 @@ except ImportError:
     CertaintyLevel = None
     CertaintyAnalysis = None
 
+# Import project registry and machine ID for global daemon mode
+try:
+    from project_registry import get_registry
+    from machine_id import get_machine_id, get_machine_name
+    GLOBAL_MODE_ENABLED = True
+except ImportError:
+    GLOBAL_MODE_ENABLED = False
+    get_registry = None
+    get_machine_id = None
+    get_machine_name = None
+
 # ==================== Configuration ====================
 
 API_BASE_URL = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
@@ -230,13 +241,26 @@ def update_task_status(
 # ==================== Task Fetching ====================
 
 def fetch_queued_tasks() -> List[Dict]:
-    """Fetch tasks with execution_status='queued' from Supabase."""
-    git_remote = get_git_remote()
+    """
+    Fetch tasks with execution_status='queued' from Supabase.
 
+    Global Mode (GLOBAL_MODE_ENABLED=True):
+        Fetches ALL queued tasks for the user, regardless of git_remote.
+        Project routing happens in execute_task() via the local registry.
+
+    Legacy Mode (GLOBAL_MODE_ENABLED=False):
+        Filters by current directory's git_remote (original behavior).
+    """
     # Build query params
     params = {"execution_status": "queued"}
-    if git_remote:
-        params["git_remote"] = git_remote
+
+    # In global mode, don't filter by git_remote - fetch ALL queued tasks
+    # Project routing is handled in execute_task() using the local registry
+    if not GLOBAL_MODE_ENABLED:
+        # Legacy mode: filter by current directory's git_remote
+        git_remote = get_git_remote()
+        if git_remote:
+            params["git_remote"] = git_remote
 
     query_string = urllib.parse.urlencode(params)
     endpoint = f"synced-todos?{query_string}"
@@ -308,57 +332,172 @@ def get_execution_mode(analysis: Optional[CertaintyAnalysis]) -> str:
         return "clarify"
 
 
+# ==================== Atomic Task Claiming ====================
+
+def claim_task(display_number: int) -> bool:
+    """
+    Attempt to atomically claim a task for this machine.
+
+    This prevents multi-Mac race conditions by only succeeding if
+    the task's status is still 'queued'.
+
+    Args:
+        display_number: Task display number to claim
+
+    Returns:
+        True if claimed successfully, False if another machine got it
+    """
+    if not GLOBAL_MODE_ENABLED:
+        # Legacy mode: no atomic claiming needed
+        return True
+
+    machine_id = get_machine_id()
+    machine_name = get_machine_name()
+
+    payload = {
+        "displayNumber": display_number,
+        "status": "running",
+        "machineId": machine_id,
+        "machineName": machine_name,
+        "atomic": True  # Enable atomic claiming
+    }
+
+    result = api_request("update-task-execution", method="PATCH", data=payload)
+
+    if not result:
+        log(f"Task #{display_number} claim request failed (network error)")
+        return False
+
+    if result.get("claimed") is True:
+        log(f"Task #{display_number} claimed by this machine ({machine_name})")
+        return True
+
+    if result.get("claimed") is False:
+        claimed_by = result.get("claimedBy", "another machine")
+        log(f"Task #{display_number} already claimed by {claimed_by}")
+        return False
+
+    # If 'claimed' not in response, treat as success (backward compatibility)
+    if result.get("success"):
+        return True
+
+    return False
+
+
 # ==================== Task Execution ====================
 
-def get_worktree_path(display_number: int) -> Path:
-    """Get the worktree path for a task."""
-    # Worktrees go in parent of current working directory
-    return Path.cwd().parent / f"push-{display_number}"
+def get_project_path_for_task(git_remote: Optional[str]) -> Optional[str]:
+    """
+    Get local path for a project from the registry.
+
+    Args:
+        git_remote: Normalized git remote URL
+
+    Returns:
+        Local path or None if project not registered
+    """
+    if not GLOBAL_MODE_ENABLED or not git_remote:
+        # Legacy mode or no git_remote: use current directory
+        return str(Path.cwd())
+
+    registry = get_registry()
+    path = registry.get_path_without_update(git_remote)
+
+    if path:
+        return path
+
+    # Not registered - return None
+    return None
 
 
-def create_worktree(display_number: int) -> bool:
-    """Create git worktree for task if it doesn't exist."""
+def get_worktree_path(display_number: int, project_path: Optional[str] = None) -> Path:
+    """
+    Get the worktree path for a task.
+
+    Args:
+        display_number: Task display number
+        project_path: Optional project path (for global mode)
+
+    Returns:
+        Path where worktree should be created
+    """
+    if project_path:
+        # Global mode: worktree in parent of project directory
+        return Path(project_path).parent / f"push-{display_number}"
+    else:
+        # Legacy mode: worktree in parent of current working directory
+        return Path.cwd().parent / f"push-{display_number}"
+
+
+def create_worktree(display_number: int, project_path: Optional[str] = None) -> Optional[Path]:
+    """
+    Create git worktree for task if it doesn't exist.
+
+    Args:
+        display_number: Task display number
+        project_path: Project directory to create worktree from (for global mode)
+
+    Returns:
+        Worktree path if successful, None if failed
+    """
     branch = f"push-{display_number}"
-    worktree_path = get_worktree_path(display_number)
+    worktree_path = get_worktree_path(display_number, project_path)
 
     if worktree_path.exists():
         log(f"Worktree already exists: {worktree_path}")
-        return True
+        return worktree_path
+
+    # Determine which directory to run git commands from
+    git_cwd = project_path if project_path else str(Path.cwd())
 
     try:
         result = subprocess.run(
             ["git", "worktree", "add", str(worktree_path), "-b", branch],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
+            cwd=git_cwd  # Run from project directory
         )
 
         if result.returncode == 0:
             log(f"Created worktree: {worktree_path}")
-            return True
+            return worktree_path
         else:
             # Branch might already exist, try without -b
             result = subprocess.run(
                 ["git", "worktree", "add", str(worktree_path), branch],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
+                cwd=git_cwd
             )
             if result.returncode == 0:
                 log(f"Created worktree (existing branch): {worktree_path}")
-                return True
+                return worktree_path
             else:
                 log(f"Failed to create worktree: {result.stderr}")
-                return False
+                return None
 
     except Exception as e:
         log(f"Worktree creation error: {e}")
-        return False
+        return None
 
 
 def execute_task(task: Dict):
-    """Create worktree and run Claude for a task with certainty-based execution mode."""
+    """
+    Create worktree and run Claude for a task with certainty-based execution mode.
+
+    Global Mode:
+        - Routes task to correct project using local registry
+        - Uses atomic claiming to prevent multi-Mac race conditions
+        - Creates worktree in the project's parent directory
+
+    Legacy Mode:
+        - Uses current working directory
+        - No atomic claiming
+    """
     display_num = task.get("displayNumber") or task.get("display_number")
+    git_remote = task.get("git_remote") or task.get("gitRemote")
     content = (
         task.get("normalizedContent") or
         task.get("normalized_content") or
@@ -376,6 +515,27 @@ def execute_task(task: Dict):
 
     if len(running_tasks) >= MAX_CONCURRENT_TASKS:
         log(f"Max concurrent tasks ({MAX_CONCURRENT_TASKS}) reached, skipping #{display_num}")
+        return
+
+    # Global mode: resolve project path from registry
+    project_path = None
+    if GLOBAL_MODE_ENABLED:
+        if not git_remote:
+            log(f"Task #{display_num} has no git_remote, skipping")
+            return
+
+        project_path = get_project_path_for_task(git_remote)
+        if not project_path:
+            log(f"Task #{display_num}: Project not registered: {git_remote}")
+            log(f"Run '/push-todo connect' in the project directory to register")
+            # Don't mark as failed - just skip for now
+            return
+
+        log(f"Task #{display_num}: Project {git_remote} -> {project_path}")
+
+    # Atomic claiming: prevent multi-Mac race conditions
+    if GLOBAL_MODE_ENABLED and not claim_task(display_num):
+        # Another machine claimed it, skip
         return
 
     log(f"Analyzing task #{display_num}: {content[:60]}...")
@@ -415,16 +575,16 @@ def execute_task(task: Dict):
         )
         return
 
-    # Update status to running
-    certainty_score = analysis.score if analysis else None
-    update_task_status(display_num, "running", certainty_score=certainty_score)
+    # Update status to running (only needed in legacy mode - global mode already claimed)
+    if not GLOBAL_MODE_ENABLED:
+        certainty_score = analysis.score if analysis else None
+        update_task_status(display_num, "running", certainty_score=certainty_score)
 
-    # Create worktree
-    if not create_worktree(display_num):
+    # Create worktree in the correct project location
+    worktree_path = create_worktree(display_num, project_path)
+    if not worktree_path:
         update_task_status(display_num, "failed", error="Failed to create git worktree")
         return
-
-    worktree_path = get_worktree_path(display_num)
 
     # Build prompt for Claude based on execution mode
     if execution_mode == "planning":
@@ -548,12 +708,32 @@ def main():
     PID_FILE.write_text(str(os.getpid()))
 
     log("=" * 60)
-    log("Push task execution daemon started")
+    if GLOBAL_MODE_ENABLED:
+        log("Push task execution daemon started (GLOBAL MODE)")
+        machine_id = get_machine_id()
+        machine_name = get_machine_name()
+        log(f"Machine: {machine_name} ({machine_id})")
+    else:
+        log("Push task execution daemon started (LEGACY MODE)")
     log(f"PID: {os.getpid()}")
     log(f"Polling interval: {POLL_INTERVAL}s")
     log(f"Max concurrent tasks: {MAX_CONCURRENT_TASKS}")
-    log(f"Working directory: {Path.cwd()}")
     log(f"Log file: {LOG_FILE}")
+
+    # Show registered projects in global mode
+    if GLOBAL_MODE_ENABLED:
+        registry = get_registry()
+        projects = registry.list_projects()
+        if projects:
+            log(f"Registered projects ({len(projects)}):")
+            for remote, path in projects.items():
+                log(f"  - {remote}")
+                log(f"    -> {path}")
+        else:
+            log("No projects registered yet")
+            log("Run '/push-todo connect' in your project directories")
+    else:
+        log(f"Working directory: {Path.cwd()}")
     log("=" * 60)
 
     # Check for API key
