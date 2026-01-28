@@ -455,7 +455,11 @@ python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.p
 
 Users only need to remember one command: `/push-todo connect`
 
-> **Note on Permission Prompts:** Claude Code will prompt for permission when running push-todo commands. This is unavoidable due to multiple Claude Code bugs (#18950, #6305). Click "Yes" or "Allow for session" when prompted.
+> **Note on Permission Prompts:** By default, Claude Code prompts for permission when running push-todo commands. To disable prompts, add `"Bash"` to your permissions in `~/.claude/settings.json`:
+> ```json
+> { "permissions": { "allow": ["Bash"] } }
+> ```
+> **Tradeoff:** This allows ALL bash commands without prompting (not just push-todo). If you prefer per-command review, click "Yes" or "Allow for session" when prompted instead.
 
 ## Task Fields
 
