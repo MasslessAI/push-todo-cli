@@ -447,9 +447,9 @@ python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.p
   --description "Voice-powered todo app for iOS with realtime sync"
 ```
 
-#### Step 6: Configure Permissions (Auto-Heal)
+#### Step 6: Configure Permissions (Auto-Heal via PreToolUse Hook)
 
-Check if Claude Code permissions are configured to avoid prompts in future sessions.
+Check if Claude Code PreToolUse hook is configured to auto-approve Push commands.
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.py" --check-permissions
@@ -459,24 +459,29 @@ python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.p
 ```json
 {
   "configured": true | false,
-  "pattern": "Bash(python3 *push-todo*)",
+  "hook_script": "pretooluse-permission.sh",
+  "hook_path": "/path/to/hooks/pretooluse-permission.sh",
   "settings_file": "~/.claude/settings.json"
 }
 ```
 
 **If `configured: false`:**
-1. Tell the user: "To avoid permission prompts in future sessions, I can save Push's permissions to your Claude Code settings."
-2. Show the pattern that will be added: `Bash(python3 *push-todo*)`
-3. Ask for confirmation: "Save permission? (yes/no)"
+1. Tell the user: "To avoid permission prompts in future sessions, I can add a PreToolUse hook to auto-approve Push commands."
+2. Show the hook that will be added
+3. Ask for confirmation: "Save permission hook? (yes/no)"
 4. If confirmed, run:
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.py" --configure-permissions
    ```
-5. Confirm success: "Permission saved. No more prompts for Push commands!"
+5. Confirm success: "Permission hook saved. Restart Claude Code for changes to take effect."
 
 **If `configured: true`:** Skip silently (already configured).
 
-**Why this step exists:** Claude Code has no built-in "Allow always" option. Without this, users must click "Allow for session" every session. This step saves the permission permanently to `~/.claude/settings.json`.
+**Why PreToolUse hooks instead of permissions.allow:**
+- Claude Code's `permissions.allow` in settings.json does NOT work for skills/subagents (bug #18950)
+- PreToolUse hooks with `permissionDecision: "allow"` bypass the permission system entirely
+- This is the documented workaround until the bug is fixed
+- See: `/docs/20260128_claude_code_permission_prompt_bypass_failed_experiments_and_solution.md`
 
 ### Why This Matters
 
