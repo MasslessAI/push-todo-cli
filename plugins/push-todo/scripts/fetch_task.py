@@ -300,7 +300,10 @@ def fetch_tasks_from_api(git_remote: Optional[str] = None, backlog_filter: Optio
                     "content": t.get("normalizedContent") or t.get("summary") or "",
                     "transcript": t.get("originalTranscript"),
                     "project_hint": None,  # Not included in synced-todos response
-                    "git_remote": git_remote,  # Store for reference (may be None for all-projects)
+                    # git_remote is DERIVED from actions (DRY - not stored on todos)
+                    # API returns gitRemote computed from action's action_config.gitRemote
+                    # See: /docs/20260128_git_remote_derivation_from_actions_architecture.md
+                    "git_remote": t.get("gitRemote") or git_remote,
                     "is_backlog": t.get("isBacklog", False),
                     "created_at": t.get("createdAt"),
                 }
@@ -369,7 +372,8 @@ def fetch_task_by_number(display_number: int) -> Optional[dict]:
                 "content": t.get("normalizedContent") or t.get("summary") or "",
                 "transcript": t.get("originalTranscript"),
                 "project_hint": None,
-                "git_remote": None,
+                # git_remote derived from actions (DRY - not stored on todos)
+                "git_remote": t.get("gitRemote"),
                 "is_backlog": t.get("isBacklog", False),
                 "created_at": t.get("createdAt"),
             }
