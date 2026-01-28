@@ -53,7 +53,36 @@ except ImportError:
 
 API_BASE_URL = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
 POLL_INTERVAL = 30  # seconds
-MAX_CONCURRENT_TASKS = 3  # Max parallel Claude sessions
+
+# Max parallel Claude sessions
+#
+# Rate Limit Research (2026-01-27):
+# ---------------------------------
+# Claude Code can authenticate two ways, each with different limits:
+#
+# 1. MAX PLAN (claude login with subscription):
+#    - Claude Max 20x: ~900 messages per 5-hour rolling window
+#    - Shared across ALL parallel sessions
+#    - Math: 5 sessions × 30 msgs/hr × 5 hrs = 750 msgs (safe under 900)
+#    - Recommendation: 5 concurrent tasks for Max 20x plan
+#
+# 2. API KEY (ANTHROPIC_API_KEY environment variable):
+#    - Tier 1 ($5):   50 RPM    → 2-3 concurrent sessions
+#    - Tier 2 ($40):  1000 RPM  → 30-50 concurrent sessions
+#    - Tier 3 ($200): 2000 RPM  → 60-100 concurrent sessions
+#    - Tier 4 ($400): 4000 RPM  → 100-200 concurrent sessions
+#
+# Memory considerations (secondary constraint):
+#    - Each Claude session uses ~400MB RAM
+#    - 16GB Mac: 10-12 sessions max (RAM-bound)
+#    - 32GB Mac: 20+ sessions (API-bound)
+#
+# Sources:
+#    - https://platform.claude.com/docs/en/api/rate-limits
+#    - https://support.claude.com/en/articles/11014257-about-claude-s-max-plan-usage
+#    - https://www.truefoundry.com/blog/claude-code-limits-explained
+#
+MAX_CONCURRENT_TASKS = 5
 
 # Certainty thresholds
 CERTAINTY_HIGH_THRESHOLD = 0.7   # >= 0.7: Execute immediately
