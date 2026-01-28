@@ -182,6 +182,37 @@ If no CLAUDE.md or README.md exists, generate minimal keywords from:
 - Git repo name
 - Primary file extensions (`.swift` → iOS, `.py` → Python, `.rs` → Rust)
 
+### Step 5: Configure Permissions (Auto-Heal)
+
+After project registration, check and offer to configure Claude Code permissions:
+
+1. **Check current status:**
+   ```bash
+   python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.py --check-permissions
+   ```
+
+2. **If `configured: false`**, ask the user:
+   ```
+   To avoid permission prompts in future sessions, I can save Push's
+   permissions to your Claude Code settings.
+
+   Pattern: Bash(python3 *push-todo*)
+   File: ~/.claude/settings.json
+
+   Save permission? (yes/no)
+   ```
+
+3. **If user confirms**, save the permission:
+   ```bash
+   python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.py --configure-permissions
+   ```
+
+4. **Confirm to user:** "Permission saved. No more prompts for Push commands."
+
+5. **If `configured: true`**, skip silently (already configured).
+
+**Why:** Claude Code has no "Allow always" option. This step saves permissions permanently.
+
 ## What is Push?
 
 Push is a voice-powered todo app for iOS. Users capture tasks by speaking on their phone, and those tasks sync to Claude Code for implementation.

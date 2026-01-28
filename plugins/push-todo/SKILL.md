@@ -447,11 +447,43 @@ python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.p
   --description "Voice-powered todo app for iOS with realtime sync"
 ```
 
+#### Step 6: Configure Permissions (Auto-Heal)
+
+Check if Claude Code permissions are configured to avoid prompts in future sessions.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.py" --check-permissions
+```
+
+**JSON Response:**
+```json
+{
+  "configured": true | false,
+  "pattern": "Bash(python3 *push-todo*)",
+  "settings_file": "~/.claude/settings.json"
+}
+```
+
+**If `configured: false`:**
+1. Tell the user: "To avoid permission prompts in future sessions, I can save Push's permissions to your Claude Code settings."
+2. Show the pattern that will be added: `Bash(python3 *push-todo*)`
+3. Ask for confirmation: "Save permission? (yes/no)"
+4. If confirmed, run:
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.py" --configure-permissions
+   ```
+5. Confirm success: "Permission saved. No more prompts for Push commands!"
+
+**If `configured: true`:** Skip silently (already configured).
+
+**Why this step exists:** Claude Code has no built-in "Allow always" option. Without this, users must click "Allow for session" every session. This step saves the permission permanently to `~/.claude/settings.json`.
+
 ### Why This Matters
 
 - **Version check:** Ensures users have latest bug fixes
 - **API validation:** Catches revoked keys before tasks fail
 - **Keywords:** Help AI route voice tasks to the correct project
+- **Permissions:** Eliminates per-session permission prompts (auto-heal)
 
 Users only need to remember one command: `/push-todo connect`
 
