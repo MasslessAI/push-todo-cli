@@ -59,15 +59,35 @@ When user explicitly asks for all projects, use the `--all-projects` flag.
 
 This ensures you always see the latest state from the Push app.
 
-### CLI Options
+### User Commands
+
+| Command | Description |
+|---------|-------------|
+| `/push-todo` | Show active tasks for current project |
+| `/push-todo 427` | Work on task #427 directly |
+| `/push-todo connect` | Setup or fix problems (doctor flow) |
+| `/push-todo review` | Check completed work against git activity |
+| `/push-todo status` | Show connection status (daemon, account, machine, project) |
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--all-projects` | See tasks from all projects |
+| `--backlog` | See deferred tasks only |
+| `--include-backlog` | Include backlog with active tasks |
+
+### Internal CLI Options (Agent Use)
 ```bash
-fetch_task.py [TASK_NUMBER] [--all-projects] [--backlog] [--include-backlog] [--json] [--mark-completed ID]
+fetch_task.py [TASK_NUMBER] [--all-projects] [--backlog] [--include-backlog] [--json] [--mark-completed ID] [--status] [--commands]
   TASK_NUMBER           Fetch a specific task by number (e.g., 5 or #5) - fast direct lookup
   --all-projects        Show tasks from ALL projects (not just current)
   --backlog             Only show backlog items (deferred tasks)
   --include-backlog     Include backlog items in the active list (by default they're excluded)
   --json                Output raw JSON format
   --mark-completed ID   Mark a task as completed by UUID
+  --status              Show comprehensive status (daemon, account, machine, project)
+  --commands            Show available user commands
 ```
 
 ### Backlog Items

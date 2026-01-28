@@ -79,6 +79,12 @@ from typing import Optional, List
 # Self-healing daemon: auto-starts on any /push-todo command
 from daemon_health import ensure_daemon_running, get_daemon_status
 
+# Project registry for status display
+from project_registry import get_registry
+
+# Machine ID for status display
+from machine_id import get_machine_id, get_machine_name
+
 # Configuration
 API_BASE_URL = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
 
@@ -453,6 +459,8 @@ def main():
     parser.add_argument("--completion-comment", metavar="TEXT", help="Comment to include when marking task completed (appears in Push app timeline)")
     parser.add_argument("--queue", metavar="NUM", help="Queue a task for background execution (e.g., --queue 427)")
     parser.add_argument("--daemon-status", action="store_true", help="Show daemon status")
+    parser.add_argument("--status", action="store_true", help="Show comprehensive status (daemon, connection, project)")
+    parser.add_argument("--commands", action="store_true", help="Show available user commands")
     parser.add_argument("--json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
 
@@ -460,8 +468,118 @@ def main():
     ensure_daemon_running()
 
     try:
-        # Handle --daemon-status
-        if args.daemon_status:
+        # Handle --commands (simple help for users)
+        if args.commands:
+            print()
+            print("  Push Voice Tasks - Commands")
+            print("  " + "=" * 40)
+            print()
+            print("  /push-todo              Show your active tasks")
+            print("  /push-todo 427          Work on task #427")
+            print("  /push-todo connect      Setup or fix problems")
+            print("  /push-todo review       Check completed work")
+            print("  /push-todo status       Show connection status")
+            print()
+            print("  Options:")
+            print("  --all-projects          See tasks from all projects")
+            print("  --backlog               See deferred tasks only")
+            print()
+            return
+
+        # Handle --status (comprehensive status view)
+        if args.status:
+            print()
+            print("  Push Voice Tasks - Status")
+            print("  " + "=" * 40)
+            print()
+
+            # Daemon status
+            daemon = get_daemon_status()
+            if daemon["running"]:
+                print(f"  Daemon: RUNNING (PID {daemon['pid']}, {daemon['uptime']})")
+                if daemon.get("version"):
+                    print(f"          Version {daemon['version']}")
+            else:
+                print("  Daemon: NOT RUNNING")
+                print("          (auto-starts on next command)")
+            print()
+
+            # Connection status
+            config_file = Path.home() / ".config" / "push" / "config"
+            if config_file.exists():
+                email = None
+                try:
+                    for line in config_file.read_text().splitlines():
+                        if line.startswith("export PUSH_EMAIL="):
+                            email = line.split("=", 1)[1].strip().strip('"\'')
+                            break
+                except Exception:
+                    pass
+                if email:
+                    print(f"  Account: {email}")
+                else:
+                    print("  Account: Configured (email unknown)")
+            else:
+                print("  Account: NOT CONNECTED")
+                print("           Run '/push-todo connect' to set up")
+            print()
+
+            # Machine info
+            try:
+                machine_name = get_machine_name()
+                machine_id = get_machine_id()
+                print(f"  Machine: {machine_name}")
+                print(f"           ID: {machine_id[-8:]}")  # Last 8 chars
+            except Exception:
+                print("  Machine: Unknown")
+            print()
+
+            # Project info
+            try:
+                git_result = subprocess.run(
+                    ["git", "remote", "get-url", "origin"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if git_result.returncode == 0:
+                    git_remote = git_result.stdout.strip()
+                    # Normalize
+                    for prefix in ["https://", "http://", "git@", "ssh://git@"]:
+                        if git_remote.startswith(prefix):
+                            git_remote = git_remote[len(prefix):]
+                            break
+                    if ":" in git_remote and "://" not in git_remote:
+                        git_remote = git_remote.replace(":", "/", 1)
+                    if git_remote.endswith(".git"):
+                        git_remote = git_remote[:-4]
+                    print(f"  Project: {git_remote}")
+
+                    # Check registry
+                    registry = get_registry()
+                    registered_path = registry.get_path_without_update(git_remote)
+                    if registered_path:
+                        print(f"           Registered: YES")
+                    else:
+                        print(f"           Registered: NO")
+                        print(f"           Run '/push-todo connect' to register")
+                else:
+                    print("  Project: Not a git repository")
+            except Exception:
+                print("  Project: Unknown")
+            print()
+
+            # Registered projects count
+            try:
+                registry = get_registry()
+                count = registry.project_count()
+                print(f"  Total registered projects: {count}")
+            except Exception:
+                pass
+
+            print("  " + "=" * 40)
+            print()
+            return
+
+        # Handle --daemon-status (legacy, kept for compatibility)
             status = get_daemon_status()
             if args.json:
                 print(json.dumps(status, indent=2))
