@@ -1,8 +1,12 @@
 # LLM-Native Keyword Learning Architecture
 
 **Date:** 2026-01-29
-**Status:** Analysis & Design
+**Status:** Implemented (Core) + Planned (Pruning)
 **Related:** Multi-source keyword learning, Push iOS app, Claude Code plugin
+
+> **Implementation Status:**
+> - ✅ Section 1-12: Core LLM-native learning - **IMPLEMENTED**
+> - 🔲 Section 13: LLM-native pruning - **PLANNED** (implementation phases defined)
 
 ---
 
@@ -20,6 +24,7 @@
 10. [Implementation Plan](#10-implementation-plan)
 11. [Edge Cases & Considerations](#11-edge-cases--considerations)
 12. [Success Metrics](#12-success-metrics)
+13. [LLM-Native Pruning](#13-llm-native-pruning)
 
 ---
 
@@ -783,6 +788,403 @@ Fresh actions need vocabulary bootstrapping:
 
 ---
 
+## 13. LLM-Native Pruning
+
+### 13.1 The Problem: Vocabulary Drift
+
+Over time, keywords accumulate from multiple sources:
+- iOS learning from todo text
+- Claude Code from task completions
+- Future: Cursor, Windsurf, manual entry
+
+Without maintenance, several quality issues emerge:
+
+| Issue | Example | Impact |
+|-------|---------|--------|
+| **Redundancy with Connect keywords** | `actionDescription: "swift, ios"` + `learnedKeywords: ["swift", "iOS"]` | Wasted slots |
+| **Semantic duplicates** | "realtime", "real-time", "real time" | Noise |
+| **Generic terms** | "code", "bug", "fix", "update" | Don't differentiate actions |
+| **Code identifiers** | "RealtimeManager", "SyncService" | Violate spoken-vocabulary philosophy |
+| **Stale vocabulary** | Terms from old architecture | No longer relevant |
+
+The 50-keyword cap eventually fills with low-value terms, blocking higher-quality additions.
+
+### 13.2 Why Not Usage-Based Decay?
+
+One approach is to track which keywords actually help match voice notes:
+
+```
+User says: "fix the realtime sync"
+→ Matches action "claude-code" via keyword "realtime"
+→ Increment usage counter for "realtime"
+→ Keywords with low usage decay over time
+```
+
+**Why this is overengineering (for now):**
+
+1. **Requires matching instrumentation** - Track which keywords contributed to each match
+2. **Requires usage persistence** - Store counters, timestamps, decay logic
+3. **Delayed feedback loop** - Takes weeks/months to identify unused keywords
+4. **Complex maintenance** - Decay rates, thresholds, exceptions
+
+The simpler, more LLM-native approach: **Let Claude review and prune periodically.**
+
+### 13.3 LLM-Native Pruning Philosophy
+
+Just as Claude reasons about vocabulary when *adding* keywords, Claude should reason about vocabulary when *removing* them:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ PRUNING TRIGGER                                               │
+│ "This action has 45 keywords. Before adding more,             │
+│  let me review the existing vocabulary..."                    │
+└──────────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│ FETCH FULL CONTEXT                                            │
+│ - Connect keywords (actionDescription): "swift, ios, push"    │
+│ - Learned keywords: ["realtime", "sync", "RealtimeManager",   │
+│     "SwiftData", "authentication", "auth", "authentication",  │
+│     "code", "bug", "fix", ...]                                │
+└──────────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│ PRUNING REASONING                                             │
+│                                                               │
+│ Claude evaluates each keyword:                                │
+│                                                               │
+│ ✅ "realtime" - Good: spoken vocabulary, domain-specific      │
+│ ✅ "sync" - Good: commonly spoken, relevant                   │
+│ ❌ "RealtimeManager" - Bad: code identifier, not spoken       │
+│ ✅ "swiftdata" - Good: would say this naturally               │
+│ ❌ "authentication" - Duplicate: same meaning as "auth"       │
+│ ❌ "code" - Bad: too generic, every project has code          │
+│ ❌ "bug" - Bad: too generic, doesn't differentiate            │
+│ ❌ "fix" - Bad: too generic, every task fixes something       │
+│                                                               │
+│ Remove: ["RealtimeManager", "authentication" (keep "auth"),   │
+│          "code", "bug", "fix"]                                │
+└──────────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│ API CALL: PRUNE KEYWORDS                                      │
+│ POST /prune-keywords                                          │
+│ {                                                             │
+│   "action_id": "uuid",                                        │
+│   "remove_keywords": ["RealtimeManager", "authentication",    │
+│                       "code", "bug", "fix"],                  │
+│   "source": "claude-code",                                    │
+│   "reason": "Pruned code identifiers, semantic duplicates,    │
+│              and generic terms"                               │
+│ }                                                             │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 13.4 When to Trigger Pruning
+
+| Trigger | Condition | Rationale |
+|---------|-----------|-----------|
+| **Approaching limit** | `total_keywords >= 40` | Proactive before cap |
+| **On-demand** | User requests "/prune-vocabulary" | Manual maintenance |
+| **Periodic (future)** | Monthly, quarterly | Hygiene |
+
+**learn-keywords response hint:**
+```typescript
+{
+  "success": true,
+  "total_keywords": 42,
+  "current_keywords": [...],
+  "pruning_recommended": true,  // Signal to Claude
+  "message": "Added 3 keywords. Consider pruning - 42/50 capacity."
+}
+```
+
+When Claude sees `pruning_recommended: true`, it should initiate a pruning cycle.
+
+### 13.5 API Design: prune-keywords
+
+**New Edge Function:** `prune-keywords`
+
+```typescript
+// Request
+POST /prune-keywords
+Authorization: Bearer push_xxx
+{
+  "action_id": "uuid",
+  "remove_keywords": string[],     // Keywords to remove
+  "source": "claude-code",
+  "reason"?: string                // For logging/audit
+}
+
+// Response
+{
+  "success": true,
+  "action_id": "uuid",
+  "action_name": "claude-code",
+  "keywords_removed": string[],    // Actually removed (case-insensitive match)
+  "keywords_not_found": string[],  // Requested but not in list
+  "remaining_keywords": string[],  // Full list after prune
+  "total_keywords": number,
+  "message": string
+}
+```
+
+**Implementation:**
+```typescript
+function pruneKeywords(
+  existing: string[],
+  toRemove: string[]
+): { remaining: string[]; removed: string[]; notFound: string[] } {
+  const removeSet = new Set(toRemove.map(k => k.toLowerCase()));
+  const removed: string[] = [];
+  const remaining: string[] = [];
+
+  for (const kw of existing) {
+    if (removeSet.has(kw.toLowerCase())) {
+      removed.push(kw);
+    } else {
+      remaining.push(kw);
+    }
+  }
+
+  const notFound = toRemove.filter(
+    k => !removed.some(r => r.toLowerCase() === k.toLowerCase())
+  );
+
+  return { remaining, removed, notFound };
+}
+```
+
+### 13.6 Enhanced API: get-action-context
+
+To enable informed pruning, Claude needs **both** Connect keywords and learned keywords:
+
+**New Edge Function:** `get-action-context`
+
+```typescript
+// Request
+GET /get-action-context?action_id=uuid
+// OR
+GET /get-action-context?todo_id=uuid
+Authorization: Bearer push_xxx
+
+// Response
+{
+  "action_id": "uuid",
+  "action_name": "claude-code",
+  "connect_keywords": string[],     // From actionDescription (Connect-owned)
+  "learned_keywords": string[],     // From learnedKeywords (Learning-owned)
+  "combined_keywords": string[],    // Deduplicated union
+  "total_learned": number,
+  "max_learned": 50,
+  "pruning_recommended": boolean,   // total_learned >= 40
+  "last_updated": "ISO timestamp"
+}
+```
+
+**Why separate from learn-keywords response?**
+- Pruning may happen without learning (pure maintenance)
+- Full context needed before pruning decisions
+- Connect keywords needed for cross-source deduplication
+
+### 13.7 Cross-Source Deduplication
+
+**The Gap:** Currently, `learn-keywords` only checks `learned_keywords` for duplicates, not `actionDescription` (Connect keywords).
+
+**The Fix:** Check both sources at write time:
+
+```typescript
+// In learn-keywords edge function
+const connectKeywords = (action.action_description || "")
+  .split(",")
+  .map(k => k.trim().toLowerCase())
+  .filter(k => k.length > 0);
+
+const existingLearned = (action.learned_keywords || [])
+  .map(k => k.toLowerCase());
+
+const allExisting = new Set([...connectKeywords, ...existingLearned]);
+
+// Filter incoming keywords
+const incoming = validKeywords.filter(kw => !allExisting.has(kw.toLowerCase()));
+```
+
+This prevents adding "swift" to learned_keywords when it's already in actionDescription.
+
+### 13.8 Pruning Skill Prompt
+
+Add to SKILL.md:
+
+```markdown
+## Vocabulary Pruning (Quality Maintenance)
+
+When you see `pruning_recommended: true` in a learn-keywords response, or when
+an action has 40+ keywords, review the vocabulary for quality.
+
+### Pruning Criteria
+
+Remove keywords that are:
+
+1. **Redundant with Connect keywords** - Already in actionDescription
+2. **Semantic duplicates** - "realtime" and "real-time" (keep one)
+3. **Generic programming terms** - "code", "bug", "fix", "update", "feature"
+4. **Code identifiers** - CamelCase class names, function names
+5. **No longer relevant** - Old architecture, deprecated features
+
+### Pruning Process
+
+1. **Fetch full context:**
+   ```bash
+   curl "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1/get-action-context?action_id=UUID" \
+     -H "Authorization: Bearer $PUSH_API_KEY"
+   ```
+
+2. **Reason about each keyword:**
+   - Would the user SAY this in a voice note?
+   - Does it differentiate THIS action from others?
+   - Is it redundant with another keyword?
+
+3. **Call prune-keywords API:**
+   ```bash
+   curl -X POST "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1/prune-keywords" \
+     -H "Authorization: Bearer $PUSH_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "action_id": "UUID",
+       "remove_keywords": ["RealtimeManager", "bug", "fix"],
+       "source": "claude-code",
+       "reason": "Removed code identifier and generic terms"
+     }'
+   ```
+
+### Quality Over Quantity
+
+A lean vocabulary of 20-30 high-quality spoken terms is better than
+50 mixed-quality terms. Prune aggressively.
+```
+
+### 13.9 Implementation Plan for Pruning
+
+#### Phase P1: Cross-Source Deduplication (Immediate)
+
+**Goal:** Prevent duplicates between Connect and Learned keywords at write time
+
+**Tasks:**
+1. Update `learn-keywords` edge function to fetch `action_description`
+2. Build combined set of existing keywords (both sources)
+3. Filter incoming keywords against combined set
+4. Update response to indicate source of duplicates
+
+**Effort:** ~1 hour
+**Priority:** High (fixes current gap)
+
+#### Phase P2: get-action-context Endpoint
+
+**Goal:** Enable Claude to fetch full vocabulary context before pruning
+
+**Tasks:**
+1. Create new `get-action-context` edge function
+2. Return both `connect_keywords` and `learned_keywords`
+3. Include `pruning_recommended` flag
+4. Add to plugin's API utilities
+
+**Effort:** ~1.5 hours
+**Priority:** High
+
+#### Phase P3: prune-keywords Endpoint
+
+**Goal:** Enable Claude to remove low-quality keywords
+
+**Tasks:**
+1. Create new `prune-keywords` edge function
+2. Implement case-insensitive removal logic
+3. Return remaining keywords for confirmation
+4. Add to plugin's API utilities
+
+**Effort:** ~1.5 hours
+**Priority:** High
+
+#### Phase P4: learn-keywords Response Enhancement
+
+**Goal:** Signal when pruning is recommended
+
+**Tasks:**
+1. Add `pruning_recommended` field (true when `total >= 40`)
+2. Add helpful message suggesting pruning
+3. Ensure `current_keywords` is returned (already done)
+
+**Effort:** ~30 minutes
+**Priority:** Medium
+
+#### Phase P5: Skill Prompt Update for Pruning
+
+**Goal:** Guide Claude through pruning process
+
+**Tasks:**
+1. Add pruning section to SKILL.md
+2. Include criteria, process, and examples
+3. Add CLI helpers if needed
+
+**Effort:** ~30 minutes
+**Priority:** Medium
+
+#### Phase P6: Testing & Validation
+
+**Goal:** Verify end-to-end pruning flow
+
+**Test scenarios:**
+1. Add keywords until `pruning_recommended` triggers
+2. Fetch action context, verify both keyword sources visible
+3. Prune some keywords, verify removal
+4. Add new keywords, verify space available
+5. Verify iOS sync receives pruned list
+
+**Effort:** ~1 hour
+**Priority:** High
+
+### 13.10 Future Evolution: Usage-Informed Pruning
+
+If vocabulary quality becomes a persistent issue, usage tracking can be added:
+
+```typescript
+// Future: Usage-informed pruning data
+{
+  "action_id": "uuid",
+  "learned_keywords": [
+    { "keyword": "realtime", "added_at": "...", "match_count": 12 },
+    { "keyword": "sync", "added_at": "...", "match_count": 8 },
+    { "keyword": "code", "added_at": "...", "match_count": 0 }  // Never helped
+  ],
+  "usage_summary": {
+    "never_matched": ["code", "bug", "fix"],
+    "low_usage": ["authentication"],
+    "high_usage": ["realtime", "sync", "swift"]
+  }
+}
+```
+
+**When to add usage tracking:**
+- If LLM-native pruning proves insufficient
+- If vocabulary quality doesn't improve over time
+- If users request data-driven vocabulary management
+
+**For now:** LLM-native pruning is simpler, more aligned with philosophy, and likely sufficient.
+
+### 13.11 Pruning Decision Log
+
+| Date | Decision | Rationale |
+|------|----------|-----------|
+| 2026-01-29 | LLM-native over usage-based | Simpler, no instrumentation needed |
+| 2026-01-29 | Threshold at 40 keywords | Buffer before 50 cap |
+| 2026-01-29 | Cross-source dedup at write | Prevent obvious redundancy |
+| 2026-01-29 | Separate prune-keywords API | Clear semantics, audit trail |
+| 2026-01-29 | get-action-context for full view | Need both sources for informed pruning |
+
+---
+
 ## Appendix A: Example Vocabulary Comparison
 
 ### Task: "Fix the sync conflict resolution bug"
@@ -817,10 +1219,20 @@ notify, alert, push notification
 
 ## Appendix B: Related Documents
 
-- `/docs/20260129_multi_source_keyword_learning_architecture.md` (AppleWhisper)
-- `/docs/20260128_user_profile_simple_memory_research.md` (AppleWhisper)
-- `App/Services/KeywordLearningService.swift` (iOS implementation)
-- `supabase/functions/learn-keywords/index.ts` (Edge function)
+**AppleWhisper (iOS App):**
+- `/docs/20260129_multi_source_keyword_learning_architecture.md` - Overall architecture
+- `/docs/20260128_user_profile_simple_memory_research.md` - User profile research
+- `App/Services/KeywordLearningService.swift` - iOS keyword learning
+- `App/Data/Action.swift` - `combinedKeywords` computed property
+
+**Supabase Edge Functions:**
+- `supabase/functions/learn-keywords/index.ts` - Keyword learning endpoint ✅
+- `supabase/functions/get-action-context/index.ts` - Full context endpoint (PLANNED)
+- `supabase/functions/prune-keywords/index.ts` - Keyword pruning endpoint (PLANNED)
+
+**Push-Todo Plugin:**
+- `scripts/fetch_task.py` - `learn_vocabulary()` utility
+- `SKILL.md` - Vocabulary learning & pruning guidance
 
 ---
 
@@ -832,3 +1244,8 @@ notify, alert, push notification
 | 2026-01-29 | Vocabulary not tags | Purpose is voice matching, not project description |
 | 2026-01-29 | Skill prompt guidance | Let Claude reason, don't hardcode extraction |
 | 2026-01-29 | Keep server merge | Multiple sources contribute; server dedupes |
+| 2026-01-29 | LLM-native pruning over usage-decay | Simpler, no instrumentation, aligned with philosophy |
+| 2026-01-29 | Pruning threshold at 40 | Buffer before 50 cap, proactive maintenance |
+| 2026-01-29 | Cross-source dedup at write | Prevent obvious redundancy between Connect/Learned |
+| 2026-01-29 | Separate prune-keywords API | Clear semantics, audit trail, explicit action |
+| 2026-01-29 | get-action-context endpoint | Need both keyword sources for informed pruning |
