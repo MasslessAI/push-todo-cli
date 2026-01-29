@@ -21,6 +21,7 @@ See: /docs/20260127_parallel_task_execution_implementation_plan.md
 See: /docs/20260127_certainty_based_execution_architecture.md
 """
 
+import argparse
 import json
 import os
 import select
@@ -34,6 +35,7 @@ import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+import platform
 
 # Import certainty analyzer for task evaluation
 # Add script directory to path since daemon runs from git repo, not scripts dir
@@ -194,6 +196,43 @@ daemon_start_time: Optional[datetime] = None
 
 # ==================== Logging ====================
 
+LOG_MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+LOG_BACKUP_COUNT = 3  # Keep 3 backups
+
+
+def rotate_logs():
+    """
+    Rotate log file if it exceeds LOG_MAX_SIZE.
+
+    Keeps LOG_BACKUP_COUNT backups:
+    - daemon.log -> daemon.log.1 -> daemon.log.2 -> daemon.log.3 (deleted)
+
+    Called at daemon startup to prevent unbounded growth.
+    """
+    try:
+        if not LOG_FILE.exists():
+            return
+
+        if LOG_FILE.stat().st_size < LOG_MAX_SIZE:
+            return
+
+        # Rotate existing backups
+        for i in range(LOG_BACKUP_COUNT, 0, -1):
+            old_backup = LOG_FILE.with_suffix(f".log.{i}")
+            new_backup = LOG_FILE.with_suffix(f".log.{i + 1}")
+
+            if i == LOG_BACKUP_COUNT and old_backup.exists():
+                old_backup.unlink()  # Delete oldest
+            elif old_backup.exists():
+                old_backup.rename(new_backup)
+
+        # Rotate current log to .1
+        LOG_FILE.rename(LOG_FILE.with_suffix(".log.1"))
+
+    except Exception:
+        pass  # Non-critical - continue even if rotation fails
+
+
 def log(message: str):
     """Log with timestamp to both stdout and log file."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -203,6 +242,48 @@ def log(message: str):
         with open(LOG_FILE, "a") as f:
             f.write(line + "\n")
     except Exception:
+        pass
+
+
+def send_mac_notification(title: str, message: str, sound: str = "default"):
+    """
+    Send macOS notification using osascript.
+
+    This provides immediate feedback on the Mac running the daemon,
+    complementing the iOS notifications sent via Supabase.
+
+    Args:
+        title: Notification title
+        message: Notification body
+        sound: Sound name ("default", "Glass", "Basso", "Ping", "Pop", "Purr")
+               - "Glass" for success/completion
+               - "Basso" for errors/failures
+               - "Ping" for attention needed
+               - "default" for standard notification
+
+    See: /docs/20260128_mac_terminal_daemon_ux_improvements.md
+    """
+    # Only run on macOS
+    if platform.system() != "Darwin":
+        return
+
+    # Escape quotes and backslashes for AppleScript
+    title_escaped = title.replace('\\', '\\\\').replace('"', '\\"')
+    message_escaped = message.replace('\\', '\\\\').replace('"', '\\"')
+
+    # Build AppleScript command
+    script = f'display notification "{message_escaped}" with title "{title_escaped}"'
+    if sound and sound != "default":
+        script += f' sound name "{sound}"'
+
+    try:
+        subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            timeout=5
+        )
+    except Exception as e:
+        # Non-critical - just log if verbose
         pass
 
 
@@ -599,6 +680,12 @@ def monitor_task_stdout(display_num: int, proc: subprocess.Popen):
                     display_number=display_num,
                     notification_type="needs_input",
                     priority="high"
+                )
+                # Mac notification for stuck/needs input
+                send_mac_notification(
+                    f"🟡 Task #{display_num} needs input",
+                    f"{summary[:40]}... {stuck_reason}",
+                    "Ping"
                 )
 
 
@@ -1048,6 +1135,12 @@ def execute_task(task: Dict):
                 notification_type="needs_input",
                 priority="high"
             )
+            # Mac notification for low certainty
+            send_mac_notification(
+                f"🔴 Task #{display_num} needs clarification",
+                f"{summary[:50]}... Low certainty - please clarify.",
+                "Ping"
+            )
 
         return
 
@@ -1148,6 +1241,14 @@ If you need to understand the codebase, start by reading the CLAUDE.md file if i
         )
 
         log(f"Started Claude for task #{display_num} in {mode_desc} (PID: {proc.pid})")
+
+        # Mac notification for task start (optional - only for medium certainty)
+        if execution_mode == "planning":
+            send_mac_notification(
+                f"Task #{display_num} started (planning)",
+                f"{summary[:60]}...",
+                "default"
+            )
 
     except Exception as e:
         log(f"Error starting Claude for task #{display_num}: {e}")
@@ -1380,12 +1481,24 @@ def check_running_tasks():
                             display_number=display_num,
                             notification_type="task_complete"
                         )
+                        # Mac notification with PR info
+                        send_mac_notification(
+                            f"✅ Task #{display_num} complete",
+                            f"{summary[:50]}... PR ready for review.",
+                            "Glass"
+                        )
                     else:
                         send_notification(
                             f"✅ Task #{display_num} complete: {summary[:40]}...",
                             task_id=task_info.get("task_id"),
                             display_number=display_num,
                             notification_type="task_complete"
+                        )
+                        # Mac notification without PR
+                        send_mac_notification(
+                            f"✅ Task #{display_num} complete",
+                            f"{summary[:50]}...",
+                            "Glass"
                         )
 
                 # Track in completed_today
@@ -1412,6 +1525,12 @@ def check_running_tasks():
                         display_number=display_num,
                         notification_type="task_failed",
                         priority="high"
+                    )
+                    # Mac notification for failure
+                    send_mac_notification(
+                        f"❌ Task #{display_num} failed",
+                        f"{summary[:40]}... Exit code {retcode}",
+                        "Basso"
                     )
 
                 # Track in completed_today as failed
@@ -1459,6 +1578,12 @@ def check_running_tasks():
                 display_number=display_num,
                 notification_type="task_timeout",
                 priority="high"
+            )
+            # Mac notification for timeout
+            send_mac_notification(
+                f"⏱️ Task #{display_num} timed out",
+                f"{summary[:40]}... ({duration}s limit reached)",
+                "Basso"
             )
 
         # Track in completed_today
@@ -1512,23 +1637,188 @@ def cleanup(signum, frame):
     sys.exit(0)
 
 
+# ==================== Daemon Control (P4 Feature) ====================
+# See: /docs/20260128_mac_terminal_daemon_ux_improvements.md
+
+def is_daemon_running() -> Optional[int]:
+    """
+    Check if daemon is already running.
+
+    Returns:
+        PID if running, None otherwise
+    """
+    if not PID_FILE.exists():
+        return None
+
+    try:
+        pid = int(PID_FILE.read_text().strip())
+
+        # Check if process is actually running
+        os.kill(pid, 0)  # Doesn't kill, just checks
+        return pid
+
+    except (ValueError, ProcessLookupError, PermissionError):
+        # PID file exists but process is dead - clean up
+        try:
+            PID_FILE.unlink()
+        except Exception:
+            pass
+        return None
+
+
+def stop_daemon() -> bool:
+    """
+    Stop the running daemon.
+
+    Returns:
+        True if daemon was stopped, False if not running
+    """
+    pid = is_daemon_running()
+
+    if not pid:
+        print("Daemon is not running")
+        return False
+
+    print(f"Stopping daemon (PID: {pid})...")
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+
+        # Wait for process to exit (max 5 seconds)
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.1)
+            except ProcessLookupError:
+                # Process is gone
+                break
+
+        # Clean up files
+        PID_FILE.unlink(missing_ok=True)
+        STATUS_FILE.unlink(missing_ok=True)
+
+        print("Daemon stopped")
+        return True
+
+    except Exception as e:
+        print(f"Error stopping daemon: {e}")
+        return False
+
+
+def show_daemon_status():
+    """Show current daemon status (non-ANSI output)."""
+    pid = is_daemon_running()
+
+    if not pid:
+        print("Daemon: OFFLINE")
+        print("")
+        print("Start with: push-daemon start")
+        print("Or run any /push-todo command to auto-start")
+        return
+
+    # Read status file for details
+    status = None
+    if STATUS_FILE.exists():
+        try:
+            with open(STATUS_FILE, "r") as f:
+                status = json.load(f)
+        except Exception:
+            pass
+
+    print(f"Daemon: ONLINE (PID: {pid})")
+
+    if status:
+        daemon = status.get("daemon", {})
+        stats = status.get("stats", {})
+        active_tasks = status.get("active_tasks", [])
+        completed = status.get("completed_today", [])
+
+        version = daemon.get("version", "?")
+        machine = daemon.get("machine_name", "unknown")
+        print(f"Version: {version}")
+        print(f"Machine: {machine}")
+        print("")
+
+        running = [t for t in active_tasks if t.get("status") == "running"]
+        queued = [t for t in active_tasks if t.get("status") == "queued"]
+
+        if running:
+            print(f"Running ({len(running)}):")
+            for task in running:
+                elapsed = task.get("elapsed_seconds", 0)
+                mins, secs = divmod(elapsed, 60)
+                print(f"  ● #{task.get('display_number', '?')} {task.get('summary', '')[:40]} ({mins}m {secs}s)")
+
+        if queued:
+            print(f"Queued ({len(queued)}):")
+            for task in queued:
+                print(f"  ○ #{task.get('display_number', '?')} {task.get('summary', '')[:40]}")
+
+        if not running and not queued:
+            print("No active tasks")
+
+        print("")
+        print(f"Slots: {stats.get('running', 0)}/{stats.get('max_concurrent', 5)}")
+        print(f"Completed today: {stats.get('completed_today', 0)}")
+    else:
+        print("(Status file not found)")
+
+
+def daemonize():
+    """
+    Fork to background using double-fork technique.
+
+    This is the Unix standard way to create a daemon process:
+    1. First fork - parent exits, child continues
+    2. setsid() - become session leader
+    3. Second fork - prevent reacquiring terminal
+    4. Redirect stdin/stdout/stderr
+    """
+    # First fork
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # Parent exits
+            sys.exit(0)
+    except OSError as e:
+        print(f"First fork failed: {e}")
+        sys.exit(1)
+
+    # Decouple from parent environment
+    os.chdir("/")
+    os.setsid()
+    os.umask(0)
+
+    # Second fork
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # First child exits
+            sys.exit(0)
+    except OSError as e:
+        print(f"Second fork failed: {e}")
+        sys.exit(1)
+
+    # Redirect standard file descriptors
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    # Redirect to /dev/null (logs still go to LOG_FILE via log())
+    with open("/dev/null", "r") as devnull:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+
+    # Redirect stdout/stderr to log file
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG_FILE, "a") as log_file:
+        os.dup2(log_file.fileno(), sys.stdout.fileno())
+        os.dup2(log_file.fileno(), sys.stderr.fileno())
+
+
 # ==================== Main Loop ====================
 
-def main():
-    """Main daemon loop."""
+def run_daemon():
+    """Run the main daemon loop (after setup)."""
     global daemon_start_time
-
-    # Set up signal handlers
-    signal.signal(signal.SIGTERM, cleanup)
-    signal.signal(signal.SIGINT, cleanup)
-
-    # Create directories
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    # Write PID file and version file (version from plugin.json)
-    PID_FILE.write_text(str(os.getpid()))
-    VERSION_FILE.write_text(get_plugin_version())
 
     # Track daemon start time
     daemon_start_time = datetime.now()
@@ -1600,6 +1890,95 @@ def main():
             log(f"Error in main loop: {e}")
 
         time.sleep(POLL_INTERVAL)
+
+
+def main():
+    """
+    Main entry point with argument parsing.
+
+    Usage:
+        python daemon.py                 # Run in foreground (default)
+        python daemon.py --background    # Run in background (daemonize)
+        python daemon.py --status        # Show daemon status
+        python daemon.py --stop          # Stop running daemon
+
+    See: /docs/20260128_mac_terminal_daemon_ux_improvements.md
+    """
+    parser = argparse.ArgumentParser(
+        description="Push Task Execution Daemon",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python daemon.py                 Run daemon in foreground
+  python daemon.py --background    Run daemon in background
+  python daemon.py --status        Show daemon status
+  python daemon.py --stop          Stop running daemon
+        """
+    )
+
+    parser.add_argument(
+        "--background", "-b",
+        action="store_true",
+        help="Run daemon in background (daemonize)"
+    )
+    parser.add_argument(
+        "--status", "-s",
+        action="store_true",
+        help="Show daemon status and exit"
+    )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop running daemon"
+    )
+
+    args = parser.parse_args()
+
+    # Handle status command
+    if args.status:
+        show_daemon_status()
+        return
+
+    # Handle stop command
+    if args.stop:
+        stop_daemon()
+        return
+
+    # Check if daemon is already running
+    existing_pid = is_daemon_running()
+    if existing_pid:
+        print(f"Daemon is already running (PID: {existing_pid})")
+        print("Use --stop to stop it, or --status to check status")
+        sys.exit(1)
+
+    # Background mode - fork to background
+    if args.background:
+        print("Starting daemon in background...")
+        daemonize()
+        # After daemonize(), we're in the child process
+        # Continue to run_daemon()
+
+    # Set up signal handlers
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    # Create directories
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # Rotate logs if needed (prevents unbounded growth)
+    rotate_logs()
+
+    # Write PID file and version file (version from plugin.json)
+    PID_FILE.write_text(str(os.getpid()))
+    VERSION_FILE.write_text(get_plugin_version())
+
+    if args.background:
+        # In background mode, print to log file
+        log("Daemon started in background mode")
+
+    # Run the daemon
+    run_daemon()
 
 
 if __name__ == "__main__":

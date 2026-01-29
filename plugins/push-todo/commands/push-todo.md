@@ -10,7 +10,7 @@ This command fetches and displays your active voice tasks from the Push iOS app.
 ## Usage
 
 - `/push-todo` - Show active tasks for current project
-- `/push-todo #427` - Jump directly to task #427
+- `/push-todo 427` or `/push-todo #427` - Jump directly to task #427
 - `/push-todo review` - Review existing tasks and mark completed ones
 - `/push-todo connect` - Configure your Push connection
 
