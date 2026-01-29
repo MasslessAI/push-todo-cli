@@ -1309,10 +1309,6 @@ def main():
             else:
                 print("  This project is already configured.")
 
-            # Offer to configure permissions (auto-heal) - only for Claude Code
-            if client_type == "claude-code" and not check_permission_configured():
-                configure_permissions_interactive()
-
             # Show migration hint for legacy installations
             show_migration_hint()
             print()
@@ -1380,10 +1376,6 @@ def main():
     print("  " + "=" * 40)
     print()
     print("  Your iOS app will sync this automatically.")
-
-    # Offer to configure permissions (auto-heal) - only for Claude Code
-    if client_type == "claude-code" and not check_permission_configured():
-        configure_permissions_interactive()
 
     # Show migration hint for legacy installations
     show_migration_hint()
