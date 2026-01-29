@@ -10,48 +10,43 @@ This command fetches and displays your active voice tasks from the Push iOS app.
 ## Usage
 
 - `/push-todo` - Show active tasks for current project
-- `/push-todo 427` or `/push-todo #427` - Jump directly to task #427
-- `/push-todo search "query"` - Search active AND completed tasks
+- `/push-todo 427` - Jump directly to task #427
+- `/push-todo login` - Search for tasks matching "login"
+- `/push-todo fix the auth bug` - Search for tasks matching those words
 - `/push-todo review` - Review existing tasks and mark completed ones
 - `/push-todo connect` - Configure your Push connection
 
 > **Note:** To see tasks from all projects, ask explicitly: "show tasks from all projects"
 
-## Search Mode
+## Smart Input Detection (IMPORTANT)
 
-When `/push-todo search "query"` is invoked:
+When `/push-todo <something>` is invoked, **detect the user's intent automatically**:
 
-1. **Run search**:
-   ```bash
-   python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py --search "query"
-   ```
+| Input | Detection | Action |
+|-------|-----------|--------|
+| `427` or `#427` | Looks like a number | Direct task lookup |
+| `login` | Single word, not a number | Search for "login" |
+| `fix the bug` | Multiple words | Search for "fix the bug" |
+| `review` | Reserved keyword | Run review mode |
+| `connect` | Reserved keyword | Run connect mode |
+| `status` | Reserved keyword | Show status |
+| `watch` | Reserved keyword | Watch daemon |
+| `setting` | Reserved keyword | Show settings |
 
-2. **Present results**:
-   - Results show both **active** and **completed** tasks
-   - Active tasks appear first
-   - Each result shows the task number, status, and a match context snippet
-   - Use `--all-projects` to search across all registered projects
+**Reserved keywords:** `review`, `connect`, `status`, `watch`, `setting`, `commands`
 
-### Search Options
+**The agent should infer intent** - users shouldn't need to type explicit "search" keyword. If the input is:
+- A number → fetch that task directly
+- Words (not a reserved keyword) → search for tasks matching those words
 
-- `--search "query"` or `search "query"` - Text to search for
-- `--all-projects` - Search across all projects (not just current)
-- `--json` - Output raw JSON format
+### Examples of Smart Detection
 
-### Examples
-
-```bash
-# Search for "login" in current project
-python3 .../fetch_task.py --search "login"
-
-# Search across all projects
-python3 .../fetch_task.py --search "authentication" --all-projects
-
-# Get JSON output
-python3 .../fetch_task.py --search "bug" --json
 ```
-
-The search looks through task titles, summaries, content, and original voice transcripts.
+/push-todo 701          → Fetch task #701
+/push-todo authentication → Search for "authentication"
+/push-todo realtime sync  → Search for "realtime sync"
+/push-todo review        → Run review mode (reserved)
+```
 
 ## Instructions
 
@@ -64,14 +59,32 @@ When this command is invoked:
 
 2. **If not configured**: Run the connect flow (see [Connect Mode](#connect-mode) below)
 
-3. **If configured**: Fetch tasks:
-   ```bash
-   source ~/.config/push/config && python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py
-   ```
+3. **Parse the input** after `/push-todo`:
+   - If empty → fetch all active tasks
+   - If reserved keyword (`review`, `connect`, etc.) → run that mode
+   - If looks like a number → direct task lookup
+   - If looks like words → search for matching tasks
 
-4. Present the tasks and ask which one to work on
+4. **For task list**: Present tasks and ask which one to work on
 
-5. When user selects a task, mark it as started and begin working
+5. **For search results**: Show matching tasks (active first, then completed)
+
+6. When user selects a task, begin working on it
+
+## Search Behavior
+
+When the input looks like search terms (words, not a number):
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py --search "the words"
+```
+
+**Search features:**
+- Searches BOTH active AND completed tasks
+- Active tasks appear first in results
+- Searches across: title, summary, content, voice transcript
+- Shows match context snippets
+- Use `--all-projects` for cross-project search
 
 ## Review Mode
 
