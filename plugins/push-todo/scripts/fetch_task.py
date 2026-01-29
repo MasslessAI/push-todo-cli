@@ -793,12 +793,97 @@ def queue_task(display_number: int) -> bool:
         return False
 
 
+def search_tasks(query: str, git_remote: Optional[str] = None, limit: int = 50) -> dict:
+    """
+    Search tasks by text query using the search-todos API.
+
+    Searches BOTH active AND completed tasks.
+    Searches across: title, summary, normalized_content, original_transcript.
+
+    Args:
+        query: The search query (text to search for)
+        git_remote: If provided, only search within this project
+        limit: Maximum results to return (default 50)
+
+    Returns:
+        Dict with search results:
+        {
+            "results": [...],
+            "query": str,
+            "totalCount": int,
+            "activeCount": int,
+            "completedCount": int
+        }
+    """
+    api_key = get_api_key()
+
+    # Build URL with query params
+    params = [f"q={urllib.parse.quote(query)}"]
+    if git_remote:
+        params.append(f"git_remote={urllib.parse.quote(git_remote, safe='')}")
+    if limit != 50:
+        params.append(f"limit={limit}")
+
+    url = f"{API_BASE_URL}/search-todos?{'&'.join(params)}"
+
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {api_key}")
+    req.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = json.loads(response.read().decode())
+            return data
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise ValueError("Invalid API key. Run '/push-todo connect' to configure.")
+        if e.code == 400:
+            error_body = e.read().decode()
+            try:
+                error_data = json.loads(error_body)
+                raise ValueError(error_data.get("error", "Bad request"))
+            except json.JSONDecodeError:
+                raise ValueError("Bad request")
+        raise ValueError(f"Search failed: HTTP {e.code}")
+    except urllib.error.URLError as e:
+        raise ValueError(f"Network error: {e.reason}")
+
+
+def format_search_result(result: dict) -> str:
+    """Format a single search result for display."""
+    lines = []
+
+    display_num = result.get("displayNumber")
+    is_completed = result.get("isCompleted", False)
+    is_backlog = result.get("isBacklog", False)
+
+    # Status indicators
+    status = ""
+    if is_completed:
+        status = " [COMPLETED]"
+    elif is_backlog:
+        status = " [BACKLOG]"
+
+    num_prefix = f"#{display_num}" if display_num else "??"
+    title = result.get("summary") or result.get("title") or "No summary"
+
+    lines.append(f"**{num_prefix}**{status} {title}")
+
+    # Show match context if available
+    match_context = result.get("matchContext")
+    if match_context:
+        lines.append(f"  > {match_context}")
+
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch active Push tasks")
-    parser.add_argument("task_number", nargs="?", default=None, help="Task number to fetch directly (e.g., 5 or #5)")
+    parser.add_argument("positional_args", nargs="*", help="Task number (e.g., 427) or 'search <query>'")
     parser.add_argument("--all-projects", action="store_true", help="Fetch tasks from ALL projects (not just current)")
     parser.add_argument("--backlog", action="store_true", help="Only show backlog items")
     parser.add_argument("--include-backlog", action="store_true", help="Include backlog items in the active list")
+    parser.add_argument("--search", metavar="QUERY", help="Search tasks by text (searches both active and completed)")
     parser.add_argument("--mark-completed", metavar="ID", help="Mark a task as completed")
     parser.add_argument("--completion-comment", metavar="TEXT", help="Comment to include when marking task completed (appears in Push app timeline)")
     parser.add_argument("--queue", metavar="NUM", help="Queue a task for background execution (e.g., --queue 427)")
@@ -812,6 +897,27 @@ def main():
     parser.add_argument("--follow", "-f", action="store_true", help="With --watch: exit when all tasks complete")
     parser.add_argument("--json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
+
+    # Parse positional args: either task_number or "search <query>"
+    task_number = None
+    search_from_positional = None
+    if args.positional_args:
+        if args.positional_args[0].lower() == "search":
+            # "search foo bar" -> search query is "foo bar"
+            if len(args.positional_args) > 1:
+                search_from_positional = " ".join(args.positional_args[1:])
+            else:
+                print("Usage: /push-todo search \"your search query\"", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # First positional arg is the task number
+            task_number = args.positional_args[0]
+
+    # Merge search from positional with --search flag
+    if search_from_positional and not args.search:
+        args.search = search_from_positional
+    # Store task_number for later use
+    args.task_number = task_number
 
     # Self-healing: ensure daemon is running on any /push-todo command
     ensure_daemon_running()
@@ -880,6 +986,53 @@ def main():
                 print("Available settings: auto-commit, batch-size", file=sys.stderr)
                 sys.exit(1)
 
+        # Handle --search (search tasks by text)
+        if args.search:
+            # Determine project filter
+            git_remote = None if args.all_projects else get_git_remote()
+
+            # Perform search
+            results = search_tasks(args.search, git_remote=git_remote)
+
+            if args.json:
+                print(json.dumps(results, indent=2))
+            else:
+                total = results.get("totalCount", 0)
+                active = results.get("activeCount", 0)
+                completed = results.get("completedCount", 0)
+                query = results.get("query", args.search)
+
+                if total == 0:
+                    scope = "this project" if git_remote else "all projects"
+                    print(f"No results found for \"{query}\" in {scope}.")
+                    sys.exit(0)
+
+                # Header
+                scope = "this project" if git_remote else "all projects"
+                print(f"# Search Results for \"{query}\" ({scope})\n")
+                print(f"Found **{total}** results ({active} active, {completed} completed)\n")
+
+                # Group by status
+                search_results = results.get("results", [])
+
+                # Active results first
+                active_results = [r for r in search_results if not r.get("isCompleted")]
+                if active_results:
+                    print("## Active Tasks\n")
+                    for result in active_results:
+                        print(format_search_result(result))
+                        print()
+
+                # Completed results
+                completed_results = [r for r in search_results if r.get("isCompleted")]
+                if completed_results:
+                    print("## Completed Tasks\n")
+                    for result in completed_results:
+                        print(format_search_result(result))
+                        print()
+
+            sys.exit(0)
+
         # Handle --watch (live monitoring)
         if args.watch:
             import subprocess as sp
@@ -913,6 +1066,7 @@ def main():
             print()
             print("  /push-todo              Show your active tasks")
             print("  /push-todo 427          Work on task #427")
+            print("  /push-todo search X     Search tasks for 'X'")
             print("  /push-todo connect      Setup or fix problems")
             print("  /push-todo review       Check completed work")
             print("  /push-todo status       Show connection status")
@@ -922,6 +1076,7 @@ def main():
             print("  Options:")
             print("  --all-projects          See tasks from all projects")
             print("  --backlog               See deferred tasks only")
+            print("  --search \"query\"        Search active & completed tasks")
             print()
             return
 

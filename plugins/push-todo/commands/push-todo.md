@@ -11,10 +11,47 @@ This command fetches and displays your active voice tasks from the Push iOS app.
 
 - `/push-todo` - Show active tasks for current project
 - `/push-todo 427` or `/push-todo #427` - Jump directly to task #427
+- `/push-todo search "query"` - Search active AND completed tasks
 - `/push-todo review` - Review existing tasks and mark completed ones
 - `/push-todo connect` - Configure your Push connection
 
 > **Note:** To see tasks from all projects, ask explicitly: "show tasks from all projects"
+
+## Search Mode
+
+When `/push-todo search "query"` is invoked:
+
+1. **Run search**:
+   ```bash
+   python3 ${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py --search "query"
+   ```
+
+2. **Present results**:
+   - Results show both **active** and **completed** tasks
+   - Active tasks appear first
+   - Each result shows the task number, status, and a match context snippet
+   - Use `--all-projects` to search across all registered projects
+
+### Search Options
+
+- `--search "query"` or `search "query"` - Text to search for
+- `--all-projects` - Search across all projects (not just current)
+- `--json` - Output raw JSON format
+
+### Examples
+
+```bash
+# Search for "login" in current project
+python3 .../fetch_task.py --search "login"
+
+# Search across all projects
+python3 .../fetch_task.py --search "authentication" --all-projects
+
+# Get JSON output
+python3 .../fetch_task.py --search "bug" --json
+```
+
+The search looks through task titles, summaries, content, and original voice transcripts.
 
 ## Instructions
 
