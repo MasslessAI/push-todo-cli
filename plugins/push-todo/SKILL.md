@@ -69,14 +69,25 @@ This ensures you always see the latest state from the Push app.
 | `/push-todo review` | Check completed work against git activity |
 | `/push-todo status` | Show connection status (daemon, account, machine, project) |
 | `/push-todo watch` | Monitor daemon task execution (auto-detects environment) |
+| `/push-todo setting` | View/toggle settings (auto-commit, batch-size) |
 
-### Settings (Pro Users)
+### Settings
 
-| Command | Description |
-|---------|-------------|
-| `--set-batch-size N` | Set max tasks for batch queue (1-20, default 5) |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `auto-commit` | ON | Auto-commit when task completes (no push) |
+| `batch-size` | 5 | Max tasks for batch queue (1-20) |
 
-Example: `/push-todo --set-batch-size 10` to queue up to 10 tasks at once.
+Toggle settings with `/push-todo setting <name>`:
+```bash
+/push-todo setting              # List all settings
+/push-todo setting auto-commit  # Toggle auto-commit ON/OFF
+```
+
+Change batch size with:
+```bash
+/push-todo --set-batch-size 10  # Set batch size to 10
+```
 
 ### Options
 
@@ -105,6 +116,7 @@ Task Actions:
 Status & Settings:
   --status                Show comprehensive status (daemon, account, machine, project)
   --commands              Show available user commands
+  --setting [KEY]         View all settings or toggle specific setting (auto-commit, batch-size)
   --set-batch-size N      Set max tasks for batch queue (1-20)
   --json                  Output raw JSON format
 
@@ -242,7 +254,45 @@ Note: Users reference tasks by their global number (`#427`), which maps to the t
 
 ## Completing a Task
 
-When the task is done, mark it complete with a summary of what was accomplished:
+When the task is done, complete these steps in order:
+
+### Step 1: Auto-Commit (if enabled)
+
+**Check the auto-commit setting first:**
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py" --setting list
+```
+
+**If auto-commit is ON (default) and there are file changes:**
+
+1. Stage and commit all changes (DO NOT push):
+   ```bash
+   git add -A
+   git commit -m "$(cat <<'EOF'
+   [Push #TASK_NUM] Brief description of changes
+
+   Implementation details:
+   - What was added/changed
+   - Key files modified
+   - Any research or docs created
+
+   Co-Authored-By: Claude <noreply@anthropic.com>
+   EOF
+   )"
+   ```
+
+2. The commit message should include:
+   - Task number in subject: `[Push #427] Add dark mode toggle`
+   - Brief description of what changed
+   - Key implementation details
+   - List of created docs (if any)
+   - Co-authored-by trailer
+
+**If no file changes:** Skip this step.
+
+**If auto-commit is OFF:** Skip this step.
+
+### Step 2: Mark Task Complete
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/fetch_task.py" \
@@ -265,6 +315,31 @@ Write a good summary:
 - "Refactored auth to use JWT tokens"
 
 Confirm to the user: "Task #N marked complete in Push"
+
+### Commit Message Format
+
+When auto-commit creates a commit, use this format:
+
+```
+[Push #427] Short description (50 chars max)
+
+Implementation:
+- Added FeatureX to handle Y
+- Updated Z to support new behavior
+- Created /docs/YYYYMMDD_feature_name.md
+
+Research notes:
+- Considered approaches A, B, C
+- Chose B because of reason
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+**Key points:**
+- Subject line: `[Push #N]` prefix + imperative description
+- Body: What changed, why, and any docs created
+- Research: Include if significant exploration was done
+- Always include Co-Authored-By
 
 ## Reviewing Tasks
 

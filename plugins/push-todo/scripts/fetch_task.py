@@ -90,6 +90,72 @@ API_BASE_URL = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
 DEFAULT_MAX_BATCH_SIZE = 5
 
 
+def get_config_value(key: str, default: str = "") -> str:
+    """
+    Get a configuration value from config file.
+
+    Reads PUSH_{KEY} from ~/.config/push/config.
+
+    Args:
+        key: Config key name (without PUSH_ prefix)
+        default: Default value if not found
+
+    Returns:
+        The config value or default.
+    """
+    config_path = Path.home() / ".config" / "push" / "config"
+    full_key = f"PUSH_{key}"
+    if config_path.exists():
+        try:
+            for line in config_path.read_text().splitlines():
+                line = line.strip()
+                if line.startswith(f"export {full_key}="):
+                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    return value
+        except Exception:
+            pass
+    return default
+
+
+def set_config_value(key: str, value: str) -> bool:
+    """
+    Set a configuration value in config file.
+
+    Args:
+        key: Config key name (without PUSH_ prefix)
+        value: Value to set
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    config_path = Path.home() / ".config" / "push" / "config"
+    full_key = f"PUSH_{key}"
+
+    # Read existing config
+    lines = []
+    if config_path.exists():
+        lines = config_path.read_text().splitlines()
+
+    # Update or add the key
+    found = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"export {full_key}="):
+            lines[i] = f'export {full_key}="{value}"'
+            found = True
+            break
+
+    if not found:
+        lines.append(f'export {full_key}="{value}"')
+
+    # Write back
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("\n".join(lines) + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def get_max_batch_size() -> int:
     """
     Get the maximum batch size from config file.
@@ -100,17 +166,38 @@ def get_max_batch_size() -> int:
     Returns:
         Maximum number of tasks to offer for batch queue.
     """
-    config_path = Path.home() / ".config" / "push" / "config"
-    if config_path.exists():
-        try:
-            for line in config_path.read_text().splitlines():
-                line = line.strip()
-                if line.startswith("export PUSH_MAX_BATCH_SIZE="):
-                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    return int(value)
-        except (ValueError, Exception):
-            pass
-    return DEFAULT_MAX_BATCH_SIZE
+    value = get_config_value("MAX_BATCH_SIZE", str(DEFAULT_MAX_BATCH_SIZE))
+    try:
+        return int(value)
+    except ValueError:
+        return DEFAULT_MAX_BATCH_SIZE
+
+
+def get_auto_commit_enabled() -> bool:
+    """
+    Check if auto-commit is enabled.
+
+    Reads PUSH_AUTO_COMMIT from ~/.config/push/config.
+    Defaults to True (enabled by default, as per task spec).
+
+    Returns:
+        True if auto-commit is enabled.
+    """
+    value = get_config_value("AUTO_COMMIT", "true")
+    return value.lower() in ("true", "1", "yes", "on")
+
+
+def set_auto_commit_enabled(enabled: bool) -> bool:
+    """
+    Set auto-commit setting.
+
+    Args:
+        enabled: True to enable, False to disable
+
+    Returns:
+        True if successful.
+    """
+    return set_config_value("AUTO_COMMIT", "true" if enabled else "false")
 
 
 def set_max_batch_size(size: int) -> bool:
@@ -125,32 +212,7 @@ def set_max_batch_size(size: int) -> bool:
     """
     if size < 1 or size > 20:
         return False
-
-    config_path = Path.home() / ".config" / "push" / "config"
-
-    # Read existing config
-    lines = []
-    if config_path.exists():
-        lines = config_path.read_text().splitlines()
-
-    # Update or add PUSH_MAX_BATCH_SIZE
-    found = False
-    for i, line in enumerate(lines):
-        if line.strip().startswith("export PUSH_MAX_BATCH_SIZE="):
-            lines[i] = f'export PUSH_MAX_BATCH_SIZE="{size}"'
-            found = True
-            break
-
-    if not found:
-        lines.append(f'export PUSH_MAX_BATCH_SIZE="{size}"')
-
-    # Write back
-    try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text("\n".join(lines) + "\n")
-        return True
-    except Exception:
-        return False
+    return set_config_value("MAX_BATCH_SIZE", str(size))
 
 
 def get_git_remote() -> Optional[str]:
@@ -528,6 +590,7 @@ def main():
     parser.add_argument("--queue", metavar="NUM", help="Queue a task for background execution (e.g., --queue 427)")
     parser.add_argument("--queue-batch", metavar="NUMS", help="Queue multiple tasks (comma-separated: --queue-batch 427,351,289)")
     parser.add_argument("--set-batch-size", metavar="N", type=int, help="Set max tasks for batch queue (1-20, default 5)")
+    parser.add_argument("--setting", metavar="KEY", nargs="?", const="list", help="View or toggle a setting (e.g., --setting auto-commit)")
     parser.add_argument("--daemon-status", action="store_true", help="Show daemon status")
     parser.add_argument("--status", action="store_true", help="Show comprehensive status (daemon, connection, project)")
     parser.add_argument("--commands", action="store_true", help="Show available user commands")
@@ -551,6 +614,57 @@ def main():
                 print("Failed to update config", file=sys.stderr)
                 sys.exit(1)
             return
+
+        # Handle --setting (view or toggle settings)
+        if args.setting:
+            setting_key = args.setting.lower().replace("_", "-")
+
+            if setting_key == "list":
+                # List all settings
+                print()
+                print("  Push Settings")
+                print("  " + "=" * 40)
+                print()
+                auto_commit = get_auto_commit_enabled()
+                batch_size = get_max_batch_size()
+                print(f"  auto-commit:  {'ON' if auto_commit else 'OFF'}")
+                print(f"                Auto-commit when task completes")
+                print()
+                print(f"  batch-size:   {batch_size}")
+                print(f"                Max tasks for batch queue (1-20)")
+                print()
+                print("  Toggle with: /push-todo setting <name>")
+                print("  Example:     /push-todo setting auto-commit")
+                print()
+                return
+
+            elif setting_key == "auto-commit":
+                # Toggle auto-commit
+                current = get_auto_commit_enabled()
+                new_value = not current
+                if set_auto_commit_enabled(new_value):
+                    status = "ON" if new_value else "OFF"
+                    print(f"Auto-commit is now {status}")
+                    if new_value:
+                        print("Tasks will be auto-committed (without push) when completed.")
+                    else:
+                        print("Tasks will NOT be auto-committed when completed.")
+                else:
+                    print("Failed to update setting", file=sys.stderr)
+                    sys.exit(1)
+                return
+
+            elif setting_key == "batch-size":
+                # Show current batch size and hint
+                batch_size = get_max_batch_size()
+                print(f"Current batch size: {batch_size}")
+                print("Change with: /push-todo --set-batch-size N")
+                return
+
+            else:
+                print(f"Unknown setting: {args.setting}", file=sys.stderr)
+                print("Available settings: auto-commit, batch-size", file=sys.stderr)
+                sys.exit(1)
 
         # Handle --watch (live monitoring)
         if args.watch:
@@ -589,6 +703,7 @@ def main():
             print("  /push-todo review       Check completed work")
             print("  /push-todo status       Show connection status")
             print("  /push-todo watch        Live monitor daemon tasks")
+            print("  /push-todo setting      View/toggle settings")
             print()
             print("  Options:")
             print("  --all-projects          See tasks from all projects")
@@ -685,9 +800,11 @@ def main():
             except Exception:
                 pass
 
-            # Batch settings
+            # Settings
             batch_size = get_max_batch_size()
+            auto_commit = get_auto_commit_enabled()
             print(f"  Batch size: {batch_size} tasks")
+            print(f"  Auto-commit: {'ON' if auto_commit else 'OFF'}")
 
             print("  " + "=" * 40)
             print()
