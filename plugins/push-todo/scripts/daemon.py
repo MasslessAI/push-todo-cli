@@ -23,6 +23,7 @@ See: /docs/20260127_certainty_based_execution_architecture.md
 
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -131,6 +132,25 @@ NOTIFY_ON_COMPLETE = True    # Always notify completion
 NOTIFY_ON_FAILURE = True     # Always notify failures
 NOTIFY_ON_NEEDS_INPUT = True # Always notify when input needed
 
+# Stuck detection configuration
+# See: /docs/20260128_daemon_background_execution_comprehensive_guide.md
+STUCK_IDLE_THRESHOLD = 600   # seconds (10 min) - no output = potentially stuck
+STUCK_WARNING_THRESHOLD = 300  # seconds (5 min) - warn before marking stuck
+
+# Patterns that indicate Claude is waiting for something
+STUCK_PATTERNS = [
+    "waiting for permission",
+    "approve this action",
+    "permission required",
+    "plan ready for approval",
+    "waiting for user",
+    "enter plan mode",
+    "press enter to continue",
+    "y/n",
+    "[Y/n]",
+    "confirm:",
+]
+
 PID_FILE = Path.home() / ".push" / "daemon.pid"
 LOG_FILE = Path.home() / ".push" / "daemon.log"
 VERSION_FILE = Path.home() / ".push" / "daemon.version"
@@ -161,6 +181,12 @@ task_details: Dict[int, Dict[str, Any]] = {}
 
 # Track completed tasks today (for status display)
 completed_today: List[Dict[str, Any]] = []
+
+# Track last output time for stuck detection (display_num -> datetime)
+task_last_output: Dict[int, datetime] = {}
+
+# Track stdout buffers for pattern matching (display_num -> list of recent lines)
+task_stdout_buffer: Dict[int, List[str]] = {}
 
 # Daemon start time
 daemon_start_time: Optional[datetime] = None
@@ -459,6 +485,146 @@ def send_notification(
     else:
         # Notification failure is non-critical - just log
         log(f"Notification skipped (endpoint may not exist): {message[:50]}...")
+
+
+def read_task_stdout(display_num: int, proc: subprocess.Popen) -> Optional[str]:
+    """
+    Non-blocking read of task stdout for stuck detection.
+
+    Uses select() to check if there's data available without blocking.
+    Returns the line read, or None if no data available.
+
+    Args:
+        display_num: Task display number
+        proc: The subprocess.Popen object
+
+    Returns:
+        Line of output if available, None otherwise
+    """
+    if proc.stdout is None:
+        return None
+
+    try:
+        # Use select to check if data is available (non-blocking)
+        readable, _, _ = select.select([proc.stdout], [], [], 0)
+
+        if readable:
+            line = proc.stdout.readline()
+            if line:
+                return line.strip()
+    except Exception:
+        # select() may not work on all platforms/file types
+        pass
+
+    return None
+
+
+def check_task_stuck_patterns(display_num: int, line: str) -> Optional[str]:
+    """
+    Check if a stdout line indicates Claude is stuck waiting for input.
+
+    Args:
+        display_num: Task display number
+        line: Line of stdout to check
+
+    Returns:
+        Stuck reason if pattern matched, None otherwise
+    """
+    line_lower = line.lower()
+
+    for pattern in STUCK_PATTERNS:
+        if pattern.lower() in line_lower:
+            return f"Detected: '{pattern}'"
+
+    return None
+
+
+def monitor_task_stdout(display_num: int, proc: subprocess.Popen):
+    """
+    Monitor a task's stdout for stuck patterns and track activity.
+
+    Updates task_last_output timestamp and checks for stuck patterns.
+    Should be called in the main loop for each running task.
+
+    Args:
+        display_num: Task display number
+        proc: The subprocess.Popen object
+    """
+    global task_last_output, task_stdout_buffer
+
+    # Initialize tracking if needed
+    if display_num not in task_last_output:
+        task_last_output[display_num] = datetime.now()
+    if display_num not in task_stdout_buffer:
+        task_stdout_buffer[display_num] = []
+
+    # Read any available output
+    lines_read = 0
+    max_lines_per_check = 100  # Prevent infinite loop
+
+    while lines_read < max_lines_per_check:
+        line = read_task_stdout(display_num, proc)
+        if line is None:
+            break
+
+        lines_read += 1
+        task_last_output[display_num] = datetime.now()
+
+        # Keep last 20 lines for context
+        buffer = task_stdout_buffer[display_num]
+        buffer.append(line)
+        if len(buffer) > 20:
+            buffer.pop(0)
+
+        # Check for stuck patterns
+        stuck_reason = check_task_stuck_patterns(display_num, line)
+        if stuck_reason:
+            log(f"Task #{display_num} may be stuck: {stuck_reason}")
+            log(f"  Line: {line[:100]}...")
+
+            # Update task detail with stuck status
+            update_task_detail(
+                display_num,
+                phase="stuck",
+                detail=f"Waiting for input: {stuck_reason}"
+            )
+
+            # Send notification
+            if NOTIFY_ON_NEEDS_INPUT:
+                task_info = task_details.get(display_num, {})
+                summary = task_info.get("summary", "Unknown task")
+                send_notification(
+                    f"🟡 Task #{display_num} waiting: {stuck_reason}",
+                    task_id=task_info.get("task_id"),
+                    display_number=display_num,
+                    notification_type="needs_input",
+                    priority="high"
+                )
+
+
+def check_task_idle(display_num: int) -> bool:
+    """
+    Check if a task has been idle (no output) for too long.
+
+    Args:
+        display_num: Task display number
+
+    Returns:
+        True if task is idle beyond threshold, False otherwise
+    """
+    if display_num not in task_last_output:
+        return False
+
+    elapsed = (datetime.now() - task_last_output[display_num]).total_seconds()
+
+    if elapsed > STUCK_IDLE_THRESHOLD:
+        log(f"Task #{display_num} has been idle for {int(elapsed)}s (threshold: {STUCK_IDLE_THRESHOLD}s)")
+        return True
+
+    if elapsed > STUCK_WARNING_THRESHOLD:
+        log(f"Task #{display_num} idle warning: {int(elapsed)}s since last output")
+
+    return False
 
 
 def update_task_status(
@@ -968,6 +1134,10 @@ If you need to understand the codebase, start by reading the CLAUDE.md file if i
         running_tasks[display_num] = proc
         task_project_paths[display_num] = project_path
 
+        # Initialize stdout tracking for stuck detection
+        task_last_output[display_num] = datetime.now()
+        task_stdout_buffer[display_num] = []
+
         # Update task detail for status reporting
         mode_desc = "planning mode" if execution_mode == "planning" else "standard mode"
         update_task_detail(
@@ -1169,6 +1339,19 @@ def check_running_tasks():
                 timed_out.append(display_num)
                 continue
 
+        # Monitor stdout for stuck patterns (P2 feature)
+        # This detects when Claude is waiting for permission or input
+        monitor_task_stdout(display_num, proc)
+
+        # Check if task has been idle (no output) for too long
+        if check_task_idle(display_num):
+            task_info = task_details.get(display_num, {})
+            update_task_detail(
+                display_num,
+                phase="idle",
+                detail="No output detected - may be stuck"
+            )
+
         retcode = proc.poll()
 
         if retcode is not None:
@@ -1295,6 +1478,9 @@ def check_running_tasks():
         del running_tasks[display_num]
         # Remove from task_details
         task_details.pop(display_num, None)
+        # Clean up stdout tracking
+        task_last_output.pop(display_num, None)
+        task_stdout_buffer.pop(display_num, None)
 
         # Clean up worktree
         project_path = task_project_paths.pop(display_num, None)
