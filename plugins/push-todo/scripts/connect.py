@@ -114,6 +114,461 @@ def clear_config():
 
 
 # ============================================================================
+# E2EE SETUP (End-to-End Encryption)
+# ============================================================================
+
+def get_plugin_root() -> Path:
+    """Get the plugin root directory."""
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if plugin_root:
+        return Path(plugin_root)
+    return Path.home() / ".claude" / "skills" / "push-todo"
+
+
+def get_swift_helper_path() -> Path:
+    """Get path to the Swift keychain helper binary."""
+    return get_plugin_root() / "bin" / "push-keychain-helper"
+
+
+def get_swift_source_path() -> Path:
+    """Get path to the Swift keychain helper source."""
+    return get_plugin_root() / "src" / "KeychainHelper.swift"
+
+
+def check_e2ee_key_exists() -> bool:
+    """
+    Check if an E2EE encryption key exists in iCloud Keychain.
+
+    Returns True if the key exists (meaning E2EE is enabled in iOS app).
+    """
+    helper_path = get_swift_helper_path()
+    if not helper_path.exists():
+        return False
+
+    try:
+        result = subprocess.run(
+            [str(helper_path), "--check"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def check_swiftc_available() -> bool:
+    """Check if Swift compiler is available."""
+    try:
+        result = subprocess.run(
+            ["which", "swiftc"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def compile_swift_helper() -> dict:
+    """
+    Compile the Swift keychain helper from source.
+
+    Returns dict with:
+        - status: "success", "no_source", "compile_error", "no_swiftc"
+        - message: Human-readable message
+        - path: Path to compiled binary (if successful)
+    """
+    source_path = get_swift_source_path()
+    bin_dir = get_plugin_root() / "bin"
+    helper_path = get_swift_helper_path()
+
+    # Check if source exists
+    if not source_path.exists():
+        return {
+            "status": "no_source",
+            "message": f"Swift source not found at {source_path}"
+        }
+
+    # Check for Swift compiler
+    if not check_swiftc_available():
+        return {
+            "status": "no_swiftc",
+            "message": "Swift compiler not found. Install Xcode Command Line Tools."
+        }
+
+    # Create bin directory
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    # Compile
+    try:
+        result = subprocess.run(
+            ["swiftc", "-O", str(source_path), "-o", str(helper_path)],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "message": "Compiled encryption helper from source",
+                "path": str(helper_path)
+            }
+        else:
+            return {
+                "status": "compile_error",
+                "message": f"Compilation failed: {result.stderr}"
+            }
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "compile_error",
+            "message": "Compilation timed out"
+        }
+    except Exception as e:
+        return {
+            "status": "compile_error",
+            "message": f"Compilation error: {e}"
+        }
+
+
+def setup_e2ee() -> dict:
+    """
+    Set up E2EE support for the CLI.
+
+    This is Option D from the implementation plan:
+    1. Check if Swift helper exists
+    2. If not, try to compile from source
+    3. If no swiftc, inform user of options
+
+    Returns dict with:
+        - status: "ready", "compiled", "not_enabled", "needs_setup", "error"
+        - message: Human-readable message
+        - key_available: Whether encryption key is accessible
+    """
+    helper_path = get_swift_helper_path()
+    source_path = get_swift_source_path()
+
+    # Case 1: Helper already exists
+    if helper_path.exists():
+        key_exists = check_e2ee_key_exists()
+        if key_exists:
+            return {
+                "status": "ready",
+                "message": "E2EE ready",
+                "key_available": True
+            }
+        else:
+            return {
+                "status": "not_enabled",
+                "message": "E2EE helper ready, but no key found (enable in iOS app)",
+                "key_available": False
+            }
+
+    # Case 2: Need to compile helper
+    if source_path.exists():
+        # Check for swiftc
+        if check_swiftc_available():
+            # Compile from source (Option D: Trust-First)
+            compile_result = compile_swift_helper()
+
+            if compile_result["status"] == "success":
+                key_exists = check_e2ee_key_exists()
+                return {
+                    "status": "compiled",
+                    "message": "Compiled encryption helper from source",
+                    "key_available": key_exists,
+                    "source_path": str(source_path)
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": compile_result["message"],
+                    "key_available": False
+                }
+        else:
+            # No swiftc - offer options (Option D: Convenience Fallback)
+            return {
+                "status": "needs_setup",
+                "message": "Swift compiler not found",
+                "key_available": False,
+                "options": [
+                    "Install Xcode Command Line Tools: xcode-select --install",
+                    "Or use pre-signed binary (if available)"
+                ],
+                "source_path": str(source_path)
+            }
+
+    # Case 3: No source file
+    return {
+        "status": "error",
+        "message": "E2EE source files not found",
+        "key_available": False
+    }
+
+
+def is_interactive() -> bool:
+    """Check if running in an interactive terminal."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def import_e2ee_key() -> bool:
+    """
+    Prompt user to import E2EE key from iOS app.
+
+    Returns True if key was successfully imported, False otherwise.
+
+    NOTE: This function uses input() which only works in interactive terminals.
+    When running via Claude Code's Bash tool, use --store-e2ee-key instead.
+    """
+    # Skip interactive prompt if not in a TTY
+    if not is_interactive():
+        print()
+        print("  E2EE_KEY_IMPORT_AVAILABLE")
+        print("  Use: python connect.py --store-e2ee-key <base64_key>")
+        return False
+
+    print()
+    print("  🔐 Import Encryption Key")
+    print("  " + "-" * 38)
+    print()
+    print("  Your Push account has E2EE enabled.")
+    print("  To decrypt tasks on this Mac, import your encryption key.")
+    print()
+    print("  On your iPhone:")
+    print("    1. Open Push app")
+    print("    2. Go to Settings > End-to-End Encryption")
+    print("    3. Tap 'Export Encryption Key'")
+    print("    4. Copy the key")
+    print()
+
+    # Prompt for key
+    try:
+        key_input = input("  Paste your encryption key (or press Enter to skip): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Skipped key import.")
+        return False
+
+    if not key_input:
+        print("  Skipped key import.")
+        return False
+
+    # Validate format (should be base64, 44 chars for 32 bytes)
+    import base64
+    try:
+        key_data = base64.b64decode(key_input)
+        if len(key_data) != 32:
+            print(f"  ✗ Invalid key size: expected 32 bytes, got {len(key_data)}")
+            return False
+    except Exception:
+        print("  ✗ Invalid base64 encoding")
+        return False
+
+    # Store via Swift helper
+    helper_path = get_swift_helper_path()
+    if not helper_path.exists():
+        # Try to compile first
+        compile_result = compile_swift_helper()
+        if compile_result["status"] != "success":
+            print(f"  ✗ Cannot store key: {compile_result['message']}")
+            return False
+
+    try:
+        result = subprocess.run(
+            [str(helper_path), "--store"],
+            input=key_input,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            print("  ✓ Key stored in macOS Keychain")
+            return True
+        else:
+            print(f"  ✗ Failed to store key: {result.stderr.strip()}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        print("  ✗ Key storage timed out")
+        return False
+    except Exception as e:
+        print(f"  ✗ Error storing key: {e}")
+        return False
+
+
+def check_user_has_encrypted_todos() -> bool:
+    """
+    Check if the user has any encrypted todos on the server.
+
+    This determines whether we should prompt for E2EE key import.
+    If the user has never enabled E2EE, they won't have encrypted todos
+    and we shouldn't ask them to import a key that doesn't exist.
+
+    Returns True if user has encrypted todos, False otherwise.
+    """
+    api_key = get_existing_key()
+    if not api_key:
+        return False
+
+    try:
+        # Query for any encrypted todos (limit 1 for efficiency)
+        req = urllib.request.Request(
+            f"{API_BASE}/synced-todos?is_encrypted=true&limit=1",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            # If we get any todos back, user has E2EE enabled
+            todos = data.get("todos", data) if isinstance(data, dict) else data
+            return len(todos) > 0 if isinstance(todos, list) else False
+
+    except Exception as e:
+        # On error, assume no encrypted todos (don't prompt unnecessarily)
+        return False
+
+
+def store_e2ee_key_direct(key_input: str) -> dict:
+    """
+    Store E2EE key directly without interactive prompt.
+
+    This is used by Claude Code agent after getting the key from the user
+    via AskUserQuestion.
+
+    Args:
+        key_input: Base64-encoded encryption key (44 chars for 32 bytes)
+
+    Returns:
+        dict with status, message
+    """
+    import base64
+
+    key_input = key_input.strip()
+
+    # Validate format
+    try:
+        key_data = base64.b64decode(key_input)
+        if len(key_data) != 32:
+            return {
+                "status": "error",
+                "message": f"Invalid key size: expected 32 bytes, got {len(key_data)}"
+            }
+    except Exception:
+        return {
+            "status": "error",
+            "message": "Invalid base64 encoding"
+        }
+
+    # Store via Swift helper
+    helper_path = get_swift_helper_path()
+    if not helper_path.exists():
+        compile_result = compile_swift_helper()
+        if compile_result["status"] != "success":
+            return {
+                "status": "error",
+                "message": f"Cannot compile helper: {compile_result['message']}"
+            }
+
+    try:
+        result = subprocess.run(
+            [str(helper_path), "--store"],
+            input=key_input,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "message": "Key stored in macOS Keychain"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": f"Failed to store key: {result.stderr.strip()}"
+            }
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "message": "Key storage timed out"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error storing key: {e}"
+        }
+
+
+def show_e2ee_status(prompt_for_import: bool = True):
+    """
+    Display E2EE status during connect flow.
+
+    Shows trust-building information per the implementation plan.
+    Only prompts for key import if user has encrypted todos on the server.
+
+    Args:
+        prompt_for_import: If True, prompts user to import key when not found.
+    """
+    result = setup_e2ee()
+
+    print()
+    print("  E2EE Status")
+    print("  " + "-" * 38)
+
+    if result["status"] == "ready":
+        print("  ✓ End-to-end encryption ready")
+        print("  ✓ Encryption key available")
+
+    elif result["status"] == "compiled":
+        print("  ✓ Compiled encryption helper from source")
+        if result.get("source_path"):
+            print(f"  📄 Source: {result['source_path']}")
+        if result["key_available"]:
+            print("  ✓ Encryption key available")
+        else:
+            print("  ⚠️  No encryption key found")
+            # Only prompt if user actually has encrypted todos
+            if prompt_for_import and check_user_has_encrypted_todos():
+                if import_e2ee_key():
+                    print("  ✓ E2EE setup complete!")
+
+    elif result["status"] == "not_enabled":
+        print("  ✓ Encryption helper ready")
+        # Check if user has encrypted todos before prompting
+        has_encrypted = check_user_has_encrypted_todos()
+        if has_encrypted:
+            print("  ⚠️  No encryption key found (E2EE enabled on account)")
+            if prompt_for_import:
+                if import_e2ee_key():
+                    print("  ✓ E2EE setup complete!")
+        else:
+            print("  ℹ️  E2EE not enabled (no encrypted todos)")
+
+    elif result["status"] == "needs_setup":
+        print("  ⚠️  E2EE setup needed")
+        print("    Swift compiler not found. To enable E2EE:")
+        print("    → Run: xcode-select --install")
+        print("    → Then run: /push-todo connect")
+
+    elif result["status"] == "error":
+        print(f"  ⚠️  E2EE error: {result['message']}")
+
+    # Trust-building info
+    if result.get("source_path") and result["status"] in ["ready", "compiled"]:
+        print()
+        print("  🔐 Your encryption key:")
+        print("    • Stored securely in macOS Keychain")
+        print("    • Never sent to our servers")
+        print("    • Only your devices can decrypt")
+
+
+# ============================================================================
 # MACHINE ID VALIDATION
 # ============================================================================
 
@@ -1176,6 +1631,12 @@ def main():
         default="",
         help="Short description of the project (generated by agent)"
     )
+    parser.add_argument(
+        "--store-e2ee-key",
+        type=str,
+        metavar="KEY",
+        help="Store E2EE encryption key (base64) directly without interactive prompt"
+    )
     # NOTE: Permission configuration flags removed - they don't work due to
     # multiple Claude Code bugs (#18950, #6305). See:
     # /docs/20260128_claude_code_permission_prompt_bypass_failed_experiments_and_solution.md
@@ -1215,6 +1676,12 @@ def main():
     # Handle --validate-project flag (JSON output for agent parsing)
     if args.validate_project:
         result = validate_project_info()
+        print(json.dumps(result, indent=2))
+        return
+
+    # Handle --store-e2ee-key flag (JSON output)
+    if args.store_e2ee_key:
+        result = store_e2ee_key_direct(args.store_e2ee_key)
         print(json.dumps(result, indent=2))
         return
 
@@ -1309,6 +1776,9 @@ def main():
             else:
                 print("  This project is already configured.")
 
+            # Show E2EE status
+            show_e2ee_status()
+
             # Show migration hint for legacy installations
             show_migration_hint()
             print()
@@ -1376,6 +1846,9 @@ def main():
     print("  " + "=" * 40)
     print()
     print("  Your iOS app will sync this automatically.")
+
+    # Show E2EE status
+    show_e2ee_status()
 
     # Show migration hint for legacy installations
     show_migration_hint()

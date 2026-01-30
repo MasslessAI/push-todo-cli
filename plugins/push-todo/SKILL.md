@@ -591,6 +591,37 @@ Users only need to remember one command: `/push-todo connect`
 > ```
 > **Tradeoff:** This allows ALL bash commands without prompting (not just push-todo). If you prefer per-command review, click "Yes" or "Allow for session" when prompted instead.
 
+### E2EE Key Import (Agent Handling)
+
+The connect script is **smart about E2EE**:
+- It checks if the user has any encrypted todos on the server
+- Only prompts for key import if: (1) user has encrypted todos AND (2) no local key exists
+- If user has never enabled E2EE, shows "ℹ️ E2EE not enabled (no encrypted todos)" - no prompt
+
+**When the connect script detects `E2EE_KEY_IMPORT_AVAILABLE` in output**, the agent should:
+
+1. **Ask the user for their encryption key**:
+   ```
+   Would you like to import your E2EE encryption key?
+
+   On your iPhone:
+   1. Open Push → Settings → End-to-End Encryption
+   2. Tap "Export Encryption Key"
+   3. Copy the base64 key
+   ```
+
+2. **If user provides a key**, store it:
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/push-todo}/scripts/connect.py" \
+     --store-e2ee-key "BASE64_KEY_HERE"
+   ```
+
+3. **On success**, confirm: "E2EE key stored successfully. You can now decrypt encrypted tasks."
+
+4. **On error**, show the error message and suggest the user try again.
+
+**IMPORTANT:** The interactive `input()` prompt in connect.py does NOT work through Claude Code's Bash tool. Always use `--store-e2ee-key` to store keys programmatically.
+
 ## Task Fields
 
 Each task includes:

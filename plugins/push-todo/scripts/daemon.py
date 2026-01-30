@@ -63,6 +63,15 @@ except ImportError:
     get_machine_id = None
     get_machine_name = None
 
+# E2EE decryption support (Optional - graceful fallback if not set up)
+try:
+    from encryption import decrypt_todo_field, is_e2ee_available
+    E2EE_ENABLED = True
+except ImportError:
+    E2EE_ENABLED = False
+    decrypt_todo_field = None
+    is_e2ee_available = None
+
 # ==================== Configuration ====================
 
 API_BASE_URL = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
@@ -776,6 +785,47 @@ def fetch_queued_tasks() -> List[Dict]:
     return []
 
 
+# ==================== E2EE Decryption ====================
+
+def decrypt_task_fields(task: Dict) -> Dict:
+    """
+    Decrypt E2EE-encrypted fields in a task if encryption is available.
+
+    Encrypted fields (base64-encoded):
+    - summary
+    - normalizedContent
+    - originalTranscript
+
+    Args:
+        task: Task dict from API
+
+    Returns:
+        Task dict with decrypted fields (or unchanged if E2EE not available)
+    """
+    if not E2EE_ENABLED or decrypt_todo_field is None:
+        return task
+
+    # Create a copy to avoid modifying the original
+    decrypted = dict(task)
+
+    # Decrypt encrypted fields (API uses camelCase)
+    if "summary" in decrypted:
+        decrypted["summary"] = decrypt_todo_field(decrypted["summary"])
+    if "normalizedContent" in decrypted:
+        decrypted["normalizedContent"] = decrypt_todo_field(decrypted["normalizedContent"])
+    if "originalTranscript" in decrypted:
+        decrypted["originalTranscript"] = decrypt_todo_field(decrypted["originalTranscript"])
+    if "title" in decrypted:
+        decrypted["title"] = decrypt_todo_field(decrypted["title"])
+    # Also handle snake_case variants
+    if "normalized_content" in decrypted:
+        decrypted["normalized_content"] = decrypt_todo_field(decrypted["normalized_content"])
+    if "original_transcript" in decrypted:
+        decrypted["original_transcript"] = decrypt_todo_field(decrypted["original_transcript"])
+
+    return decrypted
+
+
 # ==================== Certainty Analysis ====================
 
 def analyze_task_certainty(task: Dict) -> Optional[CertaintyAnalysis]:
@@ -1032,6 +1082,9 @@ def execute_task(task: Dict):
         - Uses current working directory
         - No atomic claiming
     """
+    # Decrypt E2EE fields if encryption is available
+    task = decrypt_task_fields(task)
+
     display_num = task.get("displayNumber") or task.get("display_number")
     git_remote = task.get("git_remote") or task.get("gitRemote")
     content = (

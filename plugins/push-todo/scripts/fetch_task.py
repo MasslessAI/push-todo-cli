@@ -85,6 +85,15 @@ from project_registry import get_registry
 # Machine ID for status display
 from machine_id import get_machine_id, get_machine_name
 
+# E2EE decryption support (Optional - graceful fallback if not set up)
+try:
+    from encryption import decrypt_todo_field, is_e2ee_available
+    E2EE_ENABLED = True
+except ImportError:
+    E2EE_ENABLED = False
+    decrypt_todo_field = None
+    is_e2ee_available = None
+
 # Configuration
 API_BASE_URL = "https://jxuzqcbqhiaxmfitzxlo.supabase.co/functions/v1"
 DEFAULT_MAX_BATCH_SIZE = 5
@@ -213,6 +222,46 @@ def set_max_batch_size(size: int) -> bool:
     if size < 1 or size > 20:
         return False
     return set_config_value("MAX_BATCH_SIZE", str(size))
+
+
+def decrypt_task_fields(task: dict) -> dict:
+    """
+    Decrypt E2EE-encrypted fields in a task if encryption is available.
+
+    Encrypted fields (base64-encoded):
+    - summary
+    - normalizedContent
+    - originalTranscript
+    - title
+
+    Args:
+        task: Task dict from API (includes isEncrypted flag)
+
+    Returns:
+        Task dict with decrypted fields (or unchanged if not encrypted or E2EE not available)
+    """
+    if not E2EE_ENABLED or decrypt_todo_field is None:
+        return task
+
+    # Check the isEncrypted flag from API - skip decryption for plaintext todos
+    # This handles mixed scenarios where some todos are encrypted and some are not
+    if not task.get("isEncrypted", False):
+        return task
+
+    # Create a copy to avoid modifying the original
+    decrypted = dict(task)
+
+    # Decrypt encrypted fields (API uses camelCase)
+    if "summary" in decrypted:
+        decrypted["summary"] = decrypt_todo_field(decrypted["summary"])
+    if "normalizedContent" in decrypted:
+        decrypted["normalizedContent"] = decrypt_todo_field(decrypted["normalizedContent"])
+    if "originalTranscript" in decrypted:
+        decrypted["originalTranscript"] = decrypt_todo_field(decrypted["originalTranscript"])
+    if "title" in decrypted:
+        decrypted["title"] = decrypt_todo_field(decrypted["title"])
+
+    return decrypted
 
 
 def get_git_remote() -> Optional[str]:
@@ -423,8 +472,11 @@ def fetch_tasks_from_api(git_remote: Optional[str] = None, backlog_filter: Optio
             data = json.loads(response.read().decode())
             # Convert synced-todos response format to match expected format
             todos = data.get("todos", [])
-            return [
-                {
+            result = []
+            for t in todos:
+                # Decrypt E2EE fields if encryption is available
+                t = decrypt_task_fields(t)
+                result.append({
                     "id": t.get("id"),
                     "display_number": t.get("displayNumber"),  # Human-readable #1, #2, #3...
                     "summary": t.get("summary") or t.get("title", "No summary"),
@@ -437,9 +489,8 @@ def fetch_tasks_from_api(git_remote: Optional[str] = None, backlog_filter: Optio
                     "git_remote": t.get("gitRemote") or git_remote,
                     "is_backlog": t.get("isBacklog", False),
                     "created_at": t.get("createdAt"),
-                }
-                for t in todos
-            ]
+                })
+            return result
     except urllib.error.HTTPError as e:
         if e.code == 401:
             raise ValueError("Invalid API key. Run '/push-todo connect' to configure.")
@@ -496,6 +547,8 @@ def fetch_task_by_number(display_number: int) -> Optional[dict]:
             if not todos:
                 return None
             t = todos[0]
+            # Decrypt E2EE fields if encryption is available
+            t = decrypt_task_fields(t)
             return {
                 "id": t.get("id"),
                 "display_number": t.get("displayNumber"),
