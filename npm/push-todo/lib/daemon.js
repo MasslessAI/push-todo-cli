@@ -1775,6 +1775,53 @@ async function pollAndExecute() {
   updateStatusFile();
 }
 
+/**
+ * Recover tasks orphaned by a previous daemon instance.
+ * When the daemon restarts, tasks claimed by this machine may be stuck in 'running'
+ * with no process working on them. Reset them to 'queued' so the normal poll cycle
+ * picks them up and autoHeal detects prior work.
+ */
+async function recoverOrphanedTasks() {
+  const suffix = getWorktreeSuffix();
+  if (!suffix) return;
+
+  try {
+    const params = new URLSearchParams();
+    params.set('execution_status', 'running');
+
+    const response = await apiRequest(`synced-todos?${params}`);
+    if (!response.ok) return;
+
+    const data = await response.json();
+    const tasks = data.todos || [];
+
+    // Filter to tasks owned by THIS machine (branch contains our suffix)
+    const orphaned = tasks.filter(t => {
+      const branch = t.executionBranch || t.execution_branch || '';
+      return branch.endsWith(suffix);
+    });
+
+    if (orphaned.length === 0) return;
+
+    log(`Recovering ${orphaned.length} orphaned task(s) from previous daemon instance`);
+
+    for (const task of orphaned) {
+      const dn = task.displayNumber || task.display_number;
+      log(`Task #${dn}: resetting from 'running' to 'queued' (orphaned by restart)`);
+      await updateTaskStatus(dn, 'queued', {
+        event: {
+          type: 'requeued',
+          timestamp: new Date().toISOString(),
+          machineName: getMachineName() || undefined,
+          summary: 'Daemon restarted — re-queuing for auto-heal'
+        }
+      });
+    }
+  } catch (error) {
+    log(`Orphaned task recovery failed (non-fatal): ${error.message}`);
+  }
+}
+
 async function mainLoop() {
   daemonStartTime = new Date().toISOString();
 
@@ -1814,6 +1861,13 @@ async function mainLoop() {
   try {
     writeFileSync(VERSION_FILE, getVersion());
   } catch {}
+
+  // Recover orphaned tasks from previous daemon instance
+  // When the daemon restarts (self-update, crash, reboot), tasks may be stuck
+  // in 'running' with no process actually working on them. Reset them to 'queued'
+  // so the normal poll cycle picks them up and autoHeal handles the rest.
+  // See: docs/20260211_auto_complete_failure_investigation.md
+  await recoverOrphanedTasks();
 
   // Initial status
   updateStatusFile();
