@@ -55,7 +55,7 @@ const VERSION = getVersion();
 const CLIENT_NAMES = {
   'claude-code': 'Claude Code',
   'openai-codex': 'OpenAI Codex',
-  'clawdbot': 'Clawdbot'
+  'openclaw': 'OpenClaw'
 };
 
 // ============================================================================

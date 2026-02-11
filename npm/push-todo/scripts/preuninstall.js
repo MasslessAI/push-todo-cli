@@ -2,7 +2,11 @@
 /**
  * Pre-uninstall script for Push CLI.
  *
- * Removes the Claude Code plugin symlink.
+ * Removes skill symlinks for all detected AI coding clients:
+ * 1. Claude Code - ~/.claude/skills/push-todo
+ * 2. OpenAI Codex - ~/.codex/skills/push-todo
+ * 3. OpenClaw - ~/.openclaw/skills/push-todo (and legacy ~/.clawdbot/)
+ * 4. Legacy plugin - ~/.claude/plugins/push-todo
  */
 
 import { existsSync, unlinkSync, lstatSync, readlinkSync } from 'fs';
@@ -16,37 +20,37 @@ const __dirname = dirname(__filename);
 // Package root (one level up from scripts/)
 const PACKAGE_ROOT = join(__dirname, '..');
 
-// Claude Code plugin location
-const PLUGIN_LINK = join(homedir(), '.claude', 'plugins', 'push-todo');
+// All symlink locations to clean up
+const SYMLINKS = [
+  { path: join(homedir(), '.claude', 'skills', 'push-todo'), label: 'Claude Code skill' },
+  { path: join(homedir(), '.claude', 'plugins', 'push-todo'), label: 'Claude Code plugin (legacy)' },
+  { path: join(homedir(), '.codex', 'skills', 'push-todo'), label: 'OpenAI Codex skill' },
+  { path: join(homedir(), '.openclaw', 'skills', 'push-todo'), label: 'OpenClaw skill' },
+  { path: join(homedir(), '.clawdbot', 'skills', 'push-todo'), label: 'OpenClaw skill (legacy ~/.clawdbot)' },
+];
 
 /**
- * Remove Claude Code plugin symlink if it points to this package.
+ * Remove a symlink if it points to this package.
  */
-function removePluginSymlink() {
-  if (!existsSync(PLUGIN_LINK)) {
-    console.log('[push-todo] No plugin symlink found, nothing to remove.');
-    return;
-  }
+function removeSymlink({ path, label }) {
+  if (!existsSync(path)) return;
 
   try {
-    const stats = lstatSync(PLUGIN_LINK);
-
+    const stats = lstatSync(path);
     if (!stats.isSymbolicLink()) {
-      console.log('[push-todo] Plugin is not a symlink, leaving it alone.');
+      console.log(`[push-todo] ${label} is not a symlink, leaving it alone.`);
       return;
     }
 
-    const target = readlinkSync(PLUGIN_LINK);
-
-    // Only remove if it points to this package
+    const target = readlinkSync(path);
     if (target === PACKAGE_ROOT || target.includes('node_modules/@masslessai/push-todo')) {
-      unlinkSync(PLUGIN_LINK);
-      console.log('[push-todo] Removed Claude Code plugin symlink.');
+      unlinkSync(path);
+      console.log(`[push-todo] Removed ${label} symlink.`);
     } else {
-      console.log('[push-todo] Plugin symlink points elsewhere, leaving it alone.');
+      console.log(`[push-todo] ${label} symlink points elsewhere, leaving it alone.`);
     }
   } catch (error) {
-    console.error(`[push-todo] Warning: Could not remove symlink: ${error.message}`);
+    console.error(`[push-todo] Warning: Could not remove ${label}: ${error.message}`);
   }
 }
 
@@ -56,7 +60,9 @@ function removePluginSymlink() {
 function main() {
   console.log('[push-todo] Running pre-uninstall...');
 
-  removePluginSymlink();
+  for (const link of SYMLINKS) {
+    removeSymlink(link);
+  }
 
   console.log('[push-todo] Uninstall cleanup complete.');
   console.log('[push-todo] Your configuration at ~/.config/push/ has been preserved.');

@@ -5,7 +5,7 @@
  * Sets up integrations for ALL detected AI coding clients:
  * 1. Claude Code - symlink to ~/.claude/skills/ (gives clean /push-todo command)
  * 2. OpenAI Codex - AGENTS.md in ~/.codex/
- * 3. Clawdbot - SKILL.md in ~/.clawdbot/skills/
+ * 3. OpenClaw - SKILL.md in ~/.openclaw/skills/ (legacy: ~/.clawdbot/)
  * 4. Downloads native keychain helper binary (macOS)
  */
 
@@ -35,10 +35,10 @@ const CODEX_SKILL_DIR = join(CODEX_DIR, 'skills', 'push-todo');
 const CODEX_SKILL_FILE = join(CODEX_SKILL_DIR, 'SKILL.md');
 const CODEX_AGENTS_FILE = join(CODEX_DIR, 'AGENTS.md');
 
-// Clawdbot locations
-const CLAWDBOT_DIR = join(homedir(), '.clawdbot');
-const CLAWDBOT_SKILL_DIR = join(CLAWDBOT_DIR, 'skills', 'push-todo');
-const CLAWDBOT_SKILL_FILE = join(CLAWDBOT_SKILL_DIR, 'SKILL.md');
+// OpenClaw locations (formerly Clawdbot)
+const OPENCLAW_DIR = join(homedir(), '.openclaw');
+const OPENCLAW_LEGACY_DIR = join(homedir(), '.clawdbot');
+const OPENCLAW_SKILL_DIR = join(OPENCLAW_DIR, 'skills', 'push-todo');
 
 const BINARY_NAME = 'push-keychain-helper';
 const BINARY_DIR = join(__dirname, '../bin');
@@ -234,50 +234,69 @@ At the start of each session, check for pending tasks from the Push iOS app:
 }
 
 /**
- * Set up Clawdbot integration.
- * Creates symlink ~/.clawdbot/skills/push-todo -> npm package
+ * Set up OpenClaw integration (formerly Clawdbot).
+ * Creates symlink ~/.openclaw/skills/push-todo -> npm package
+ * Also cleans up legacy ~/.clawdbot/skills/push-todo if present.
  *
- * @returns {boolean} True if Clawdbot was detected and set up
+ * @returns {boolean} True if OpenClaw was detected and set up
  */
-function setupClawdbot() {
-  // Only set up if Clawdbot directory exists (user has Clawdbot installed)
-  if (!existsSync(CLAWDBOT_DIR)) {
+function setupOpenClaw() {
+  // Detect OpenClaw (new) or Clawdbot (legacy)
+  const detected = existsSync(OPENCLAW_DIR) || existsSync(OPENCLAW_LEGACY_DIR);
+  if (!detected) {
     return false;
   }
 
-  console.log('[push-todo] Detected Clawdbot installation');
+  // Prefer ~/.openclaw/ (new); fall back to ~/.clawdbot/ (legacy)
+  const targetDir = existsSync(OPENCLAW_DIR) ? OPENCLAW_DIR : OPENCLAW_LEGACY_DIR;
+  const skillDir = join(targetDir, 'skills', 'push-todo');
+  const label = existsSync(OPENCLAW_DIR) ? 'OpenClaw' : 'OpenClaw (legacy ~/.clawdbot)';
+
+  console.log(`[push-todo] Detected ${label} installation`);
 
   try {
     // Ensure skills directory exists
-    const skillsDir = join(CLAWDBOT_DIR, 'skills');
-    mkdirSync(skillsDir, { recursive: true });
+    mkdirSync(join(targetDir, 'skills'), { recursive: true });
 
     // Create symlink (same as Claude Code approach)
-    if (existsSync(CLAWDBOT_SKILL_DIR)) {
-      const stats = lstatSync(CLAWDBOT_SKILL_DIR);
+    if (existsSync(skillDir)) {
+      const stats = lstatSync(skillDir);
       if (stats.isSymbolicLink()) {
-        const target = readlinkSync(CLAWDBOT_SKILL_DIR);
+        const target = readlinkSync(skillDir);
         if (target === PACKAGE_ROOT) {
-          console.log('[push-todo] Clawdbot: Symlink already configured');
+          console.log('[push-todo] OpenClaw: Symlink already configured');
         } else {
-          unlinkSync(CLAWDBOT_SKILL_DIR);
-          symlinkSync(PACKAGE_ROOT, CLAWDBOT_SKILL_DIR);
-          console.log('[push-todo] Clawdbot: Updated symlink');
+          unlinkSync(skillDir);
+          symlinkSync(PACKAGE_ROOT, skillDir);
+          console.log('[push-todo] OpenClaw: Updated symlink');
         }
       } else {
-        // It's a directory (old copy) - remove and replace with symlink
-        rmSync(CLAWDBOT_SKILL_DIR, { recursive: true });
-        symlinkSync(PACKAGE_ROOT, CLAWDBOT_SKILL_DIR);
-        console.log('[push-todo] Clawdbot: Replaced copy with symlink');
+        rmSync(skillDir, { recursive: true });
+        symlinkSync(PACKAGE_ROOT, skillDir);
+        console.log('[push-todo] OpenClaw: Replaced copy with symlink');
       }
     } else {
-      symlinkSync(PACKAGE_ROOT, CLAWDBOT_SKILL_DIR);
-      console.log('[push-todo] Clawdbot: Created symlink');
+      symlinkSync(PACKAGE_ROOT, skillDir);
+      console.log('[push-todo] OpenClaw: Created symlink');
+    }
+
+    // Clean up legacy Clawdbot symlink if we installed to the new location
+    if (existsSync(OPENCLAW_DIR) && existsSync(OPENCLAW_LEGACY_DIR)) {
+      const legacySkill = join(OPENCLAW_LEGACY_DIR, 'skills', 'push-todo');
+      if (existsSync(legacySkill)) {
+        try {
+          const stats = lstatSync(legacySkill);
+          if (stats.isSymbolicLink()) {
+            unlinkSync(legacySkill);
+            console.log('[push-todo] OpenClaw: Cleaned up legacy ~/.clawdbot symlink');
+          }
+        } catch { /* best-effort */ }
+      }
     }
 
     return true;
   } catch (error) {
-    console.log(`[push-todo] Clawdbot: Setup failed: ${error.message}`);
+    console.log(`[push-todo] OpenClaw: Setup failed: ${error.message}`);
     return false;
   }
 }
@@ -343,15 +362,15 @@ async function main() {
   const codexSuccess = setupCodex();
   if (codexSuccess) console.log('');
 
-  // Step 5: Set up Clawdbot (if installed)
-  const clawdbotSuccess = setupClawdbot();
-  if (clawdbotSuccess) console.log('');
+  // Step 5: Set up OpenClaw (if installed — formerly Clawdbot)
+  const openclawSuccess = setupOpenClaw();
+  if (openclawSuccess) console.log('');
 
   // Track which clients were set up
   const clients = [];
   if (claudeSuccess) clients.push('Claude Code');
   if (codexSuccess) clients.push('OpenAI Codex');
-  if (clawdbotSuccess) clients.push('Clawdbot');
+  if (openclawSuccess) clients.push('OpenClaw');
 
   // Step 6: Download native binary (macOS only)
   if (platform() !== 'darwin') {
@@ -392,7 +411,7 @@ async function main() {
     console.log('[push-todo]   push-todo             List your tasks');
     if (claudeSuccess) console.log('[push-todo]   /push-todo            Use in Claude Code');
     if (codexSuccess) console.log('[push-todo]   $push-todo            Use in OpenAI Codex');
-    if (clawdbotSuccess) console.log('[push-todo]   /push-todo            Use in Clawdbot');
+    if (openclawSuccess) console.log('[push-todo]   /push-todo            Use in OpenClaw');
     return;
   }
 
@@ -429,8 +448,8 @@ async function main() {
   if (codexSuccess) {
     console.log('[push-todo]   $push-todo            Use in OpenAI Codex');
   }
-  if (clawdbotSuccess) {
-    console.log('[push-todo]   /push-todo            Use in Clawdbot');
+  if (openclawSuccess) {
+    console.log('[push-todo]   /push-todo            Use in OpenClaw');
   }
 }
 

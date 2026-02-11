@@ -85,7 +85,7 @@ ${bold('EXAMPLES:')}
 
 ${bold('CONNECT OPTIONS:')}
   --reauth                         Force re-authentication
-  --client <type>                  Client type (claude-code, openai-codex, clawdbot)
+  --client <type>                  Client type (claude-code, openai-codex, openclaw)
   --check-version                  Check for updates (JSON output)
   --update                         Update to latest version
   --validate-key                   Validate API key (JSON output)
