@@ -19,6 +19,8 @@ import { homedir, hostname, platform } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
+import { checkForUpdate, performUpdate } from './self-update.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -230,6 +232,48 @@ function getAutoCompleteEnabled() {
   return v.toLowerCase() === 'true' || v === '1' || v.toLowerCase() === 'yes';
 }
 
+function getAutoUpdateEnabled() {
+  const v = getConfigValueFromFile('AUTO_UPDATE', 'true');
+  return v.toLowerCase() === 'true' || v === '1' || v.toLowerCase() === 'yes';
+}
+
+// ==================== Capabilities Detection ====================
+
+let cachedCapabilities = null;
+let lastCapabilityCheck = 0;
+const CAPABILITY_CHECK_INTERVAL = 3600000; // 1 hour
+
+function detectCapabilities() {
+  const caps = {
+    auto_merge: getAutoMergeEnabled(),
+    auto_complete: getAutoCompleteEnabled(),
+    auto_update: getAutoUpdateEnabled(),
+  };
+
+  try {
+    execFileSync('gh', ['--version'], { timeout: 5000, stdio: 'pipe' });
+    try {
+      execFileSync('gh', ['auth', 'status'], { timeout: 5000, stdio: 'pipe' });
+      caps.gh_cli = 'authenticated';
+    } catch {
+      caps.gh_cli = 'installed_not_authenticated';
+    }
+  } catch {
+    caps.gh_cli = 'not_installed';
+  }
+
+  return caps;
+}
+
+function getCapabilities() {
+  const now = Date.now();
+  if (!cachedCapabilities || now - lastCapabilityCheck > CAPABILITY_CHECK_INTERVAL) {
+    cachedCapabilities = detectCapabilities();
+    lastCapabilityCheck = now;
+  }
+  return cachedCapabilities;
+}
+
 // ==================== E2EE Decryption ====================
 
 let decryptTodoField = null;
@@ -335,6 +379,8 @@ async function fetchQueuedTasks() {
       heartbeatHeaders['X-Machine-Id'] = machineId;
       heartbeatHeaders['X-Machine-Name'] = machineName || 'Unknown Mac';
       heartbeatHeaders['X-Git-Remotes'] = gitRemotes.join(',');
+      heartbeatHeaders['X-Daemon-Version'] = getVersion();
+      heartbeatHeaders['X-Capabilities'] = JSON.stringify(getCapabilities());
     }
 
     const response = await apiRequest(`synced-todos?${params}`, {
@@ -1317,6 +1363,54 @@ async function checkTimeouts() {
   }
 }
 
+// ==================== Self-Update ====================
+
+let pendingUpdateVersion = null;
+
+function checkAndApplyUpdate() {
+  const currentVersion = getVersion();
+
+  // Check for update (throttled internally to once per hour)
+  if (!pendingUpdateVersion) {
+    const result = checkForUpdate(currentVersion);
+    if (result.available) {
+      log(`Update available: v${currentVersion} -> v${result.version}`);
+      pendingUpdateVersion = result.version;
+    }
+  }
+
+  // Only apply when no tasks are running
+  if (pendingUpdateVersion && runningTasks.size === 0) {
+    log(`Applying update to v${pendingUpdateVersion}...`);
+    sendMacNotification(
+      'Push Daemon Updating',
+      `v${currentVersion} → v${pendingUpdateVersion}`,
+      'Glass'
+    );
+
+    const success = performUpdate(pendingUpdateVersion);
+    if (success) {
+      log(`Update to v${pendingUpdateVersion} successful. Restarting daemon...`);
+
+      // Spawn new daemon from updated code, then exit
+      const daemonScript = join(__dirname, 'daemon.js');
+      const child = spawn(process.execPath, [daemonScript], {
+        detached: true,
+        stdio: ['ignore', 'ignore', 'ignore'],
+        env: { ...process.env, PUSH_DAEMON: '1' }
+      });
+      writeFileSync(PID_FILE, String(child.pid));
+      child.unref();
+
+      log(`New daemon spawned (PID: ${child.pid}). Old daemon exiting.`);
+      process.exit(0);
+    } else {
+      logError(`Update to v${pendingUpdateVersion} failed, will retry next hour`);
+      pendingUpdateVersion = null;
+    }
+  }
+}
+
 // ==================== Main Loop ====================
 
 async function pollAndExecute() {
@@ -1364,6 +1458,9 @@ async function mainLoop() {
   log(`Polling interval: ${POLL_INTERVAL / 1000}s`);
   log(`Max concurrent tasks: ${MAX_CONCURRENT_TASKS}`);
   log(`E2EE: ${e2eeAvailable ? 'Available' : 'Not available'}`);
+  log(`Auto-update: ${getAutoUpdateEnabled() ? 'Enabled' : 'Disabled'}`);
+  const caps = getCapabilities();
+  log(`Capabilities: gh=${caps.gh_cli}, auto-merge=${caps.auto_merge}, auto-complete=${caps.auto_complete}`);
   log(`Log file: ${LOG_FILE}`);
 
   // Show registered projects
@@ -1399,6 +1496,11 @@ async function mainLoop() {
     try {
       await checkTimeouts();
       await pollAndExecute();
+
+      // Self-update check (throttled to once per hour, only applies when idle)
+      if (getAutoUpdateEnabled()) {
+        checkAndApplyUpdate();
+      }
     } catch (error) {
       logError(`Poll error: ${error.message}`);
     }

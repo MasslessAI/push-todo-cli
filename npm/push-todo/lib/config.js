@@ -193,6 +193,27 @@ export function setAutoCompleteEnabled(enabled) {
 }
 
 /**
+ * Check if auto-update is enabled for daemon self-updates.
+ * Default: true (daemon checks npm hourly and updates when idle)
+ *
+ * @returns {boolean}
+ */
+export function getAutoUpdateEnabled() {
+  const value = getConfigValue('AUTO_UPDATE', 'true');
+  return value.toLowerCase() === 'true' || value === '1' || value.toLowerCase() === 'yes';
+}
+
+/**
+ * Set auto-update setting.
+ *
+ * @param {boolean} enabled
+ * @returns {boolean} True if successful
+ */
+export function setAutoUpdateEnabled(enabled) {
+  return setConfigValue('AUTO_UPDATE', enabled ? 'true' : 'false');
+}
+
+/**
  * Get the maximum batch size for queuing tasks.
  * Default: 5
  *
@@ -270,6 +291,7 @@ export function showSettings() {
   const autoCommit = getAutoCommitEnabled();
   const autoMerge = getAutoMergeEnabled();
   const autoComplete = getAutoCompleteEnabled();
+  const autoUpdate = getAutoUpdateEnabled();
   const batchSize = getMaxBatchSize();
 
   console.log(`  auto-commit:    ${autoCommit ? 'ON' : 'OFF'}`);
@@ -280,6 +302,9 @@ export function showSettings() {
   console.log();
   console.log(`  auto-complete:  ${autoComplete ? 'ON' : 'OFF'}`);
   console.log('                  Mark task completed after successful merge');
+  console.log();
+  console.log(`  auto-update:    ${autoUpdate ? 'ON' : 'OFF'}`);
+  console.log('                  Daemon auto-updates from npm when idle');
   console.log();
   console.log(`  batch-size:     ${batchSize}`);
   console.log('                  Max tasks for batch queue (1-20)');
@@ -346,6 +371,22 @@ export function toggleSetting(settingName) {
     return false;
   }
 
+  if (normalized === 'auto-update') {
+    const current = getAutoUpdateEnabled();
+    const newValue = !current;
+    if (setAutoUpdateEnabled(newValue)) {
+      console.log(`Auto-update is now ${newValue ? 'ON' : 'OFF'}`);
+      if (newValue) {
+        console.log('Daemon will auto-update from npm when idle (hourly check).');
+      } else {
+        console.log('Daemon will NOT auto-update. Manual updates required.');
+      }
+      return true;
+    }
+    console.error('Failed to update setting');
+    return false;
+  }
+
   if (normalized === 'batch-size') {
     const batchSize = getMaxBatchSize();
     console.log(`Current batch size: ${batchSize}`);
@@ -354,7 +395,7 @@ export function toggleSetting(settingName) {
   }
 
   console.error(`Unknown setting: ${settingName}`);
-  console.error('Available settings: auto-commit, auto-merge, auto-complete, batch-size');
+  console.error('Available settings: auto-commit, auto-merge, auto-complete, auto-update, batch-size');
   return false;
 }
 
