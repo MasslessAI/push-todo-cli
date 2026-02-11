@@ -11,7 +11,7 @@ import { getGitRemote, isGitRepo } from './utils/git.js';
 import { formatTaskForDisplay, formatSearchResult } from './utils/format.js';
 import { bold, green, yellow, red, cyan, dim, muted } from './utils/colors.js';
 import { decryptTodoField, isE2EEAvailable } from './encryption.js';
-import { getAutoCommitEnabled, getMaxBatchSize } from './config.js';
+import { getAutoCommitEnabled, getAutoMergeEnabled, getAutoCompleteEnabled, getAutoUpdateEnabled, getMaxBatchSize } from './config.js';
 import { writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -333,6 +333,9 @@ export async function showStatus(options = {}) {
   const registry = getRegistry();
   const [e2eeAvailable, e2eeMessage] = isE2EEAvailable();
   const autoCommit = getAutoCommitEnabled();
+  const autoMerge = getAutoMergeEnabled();
+  const autoComplete = getAutoCompleteEnabled();
+  const autoUpdate = getAutoUpdateEnabled();
   const maxBatch = getMaxBatchSize();
 
   // Validate API key
@@ -358,6 +361,9 @@ export async function showStatus(options = {}) {
     },
     settings: {
       autoCommit,
+      autoMerge,
+      autoComplete,
+      autoUpdate,
       maxBatchSize: maxBatch
     },
     registeredProjects: registry.projectCount()
@@ -401,6 +407,9 @@ export async function showStatus(options = {}) {
 
   // Settings
   console.log(`${bold('Auto-commit:')} ${autoCommit ? 'Enabled' : 'Disabled'}`);
+  console.log(`${bold('Auto-merge:')} ${autoMerge ? 'Enabled' : 'Disabled'}`);
+  console.log(`${bold('Auto-complete:')} ${autoComplete ? 'Enabled' : 'Disabled'}`);
+  console.log(`${bold('Auto-update:')} ${autoUpdate ? 'Enabled' : 'Disabled'}`);
   console.log(`${bold('Max batch size:')} ${maxBatch}`);
   console.log(`${bold('Registered projects:')} ${status.registeredProjects}`);
 }

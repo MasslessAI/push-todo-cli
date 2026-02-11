@@ -686,15 +686,13 @@ Automated PR from Push daemon for task #${displayNumber}.
 }
 
 /**
- * Merge a PR into main and update local main branch.
- * Uses `gh pr merge` for clean remote merge, then pulls locally.
+ * Attempt to merge a PR. If merge conflicts, use Claude to resolve them.
  *
  * @returns {boolean} True if merge succeeded
  */
 function mergePRForTask(displayNumber, prUrl, projectPath) {
   const gitCwd = projectPath || process.cwd();
 
-  // Extract PR number from URL (e.g., https://github.com/user/repo/pull/42)
   const prMatch = prUrl.match(/\/pull\/(\d+)/);
   if (!prMatch) {
     logError(`Could not extract PR number from: ${prUrl}`);
@@ -702,6 +700,26 @@ function mergePRForTask(displayNumber, prUrl, projectPath) {
   }
   const prNumber = prMatch[1];
 
+  // First attempt: direct merge
+  const firstResult = attemptPRMerge(prNumber, displayNumber, gitCwd);
+  if (firstResult === 'success') return true;
+  if (firstResult !== 'conflict') return false;  // non-conflict failure
+
+  // Conflict detected — try to resolve with Claude
+  const suffix = getWorktreeSuffix();
+  const branch = `push-${displayNumber}-${suffix}`;
+  const resolved = resolveConflictsWithClaude(displayNumber, branch, gitCwd);
+  if (!resolved) return false;
+
+  // Second attempt after conflict resolution
+  log(`Retrying merge for PR #${prNumber} after conflict resolution`);
+  return attemptPRMerge(prNumber, displayNumber, gitCwd) === 'success';
+}
+
+/**
+ * Try gh pr merge. Returns 'success', 'conflict', or 'error'.
+ */
+function attemptPRMerge(prNumber, displayNumber, gitCwd) {
   try {
     execFileSync('gh', ['pr', 'merge', prNumber, '--merge', '--delete-branch'], {
       cwd: gitCwd,
@@ -722,16 +740,132 @@ function mergePRForTask(displayNumber, prUrl, projectPath) {
       log('Could not pull main (may not be checked out), skipping local update');
     }
 
-    return true;
+    return 'success';
   } catch (e) {
     const stderr = e.stderr?.toString() || e.message || '';
-    if (stderr.includes('merge conflict') || stderr.includes('conflict')) {
-      logError(`PR #${prNumber} has merge conflicts, skipping auto-merge`);
-    } else if (stderr.includes('not found') || stderr.includes('ENOENT')) {
+    if (stderr.includes('not found') || stderr.includes('ENOENT')) {
       log('GitHub CLI (gh) not installed, skipping merge');
-    } else {
-      logError(`Failed to merge PR #${prNumber}: ${stderr.slice(0, 200)}`);
+      return 'error';
     }
+    if (stderr.includes('merge conflict') || stderr.includes('conflict')) {
+      log(`PR #${prNumber} has merge conflicts, will attempt resolution`);
+      return 'conflict';
+    }
+    logError(`PR merge failed for #${displayNumber}: ${stderr.slice(0, 200)}`);
+    return 'error';
+  }
+}
+
+/**
+ * Resolve merge conflicts by creating a worktree, merging main, using Claude
+ * to fix conflicts, then committing and pushing the resolution.
+ *
+ * @returns {boolean} True if conflicts were resolved and pushed
+ */
+function resolveConflictsWithClaude(displayNumber, branch, projectPath) {
+  log(`Attempting conflict resolution for task #${displayNumber}`);
+
+  const worktreePath = getWorktreePath(displayNumber, projectPath);
+
+  // Recreate worktree from the existing branch
+  try {
+    if (!existsSync(worktreePath)) {
+      execFileSync('git', ['worktree', 'add', worktreePath, branch], {
+        cwd: projectPath,
+        timeout: 30000,
+        stdio: 'pipe'
+      });
+    }
+  } catch (e) {
+    logError(`Could not create worktree for conflict resolution: ${e.message}`);
+    return false;
+  }
+
+  try {
+    // Fetch latest main
+    execFileSync('git', ['fetch', 'origin'], {
+      cwd: worktreePath,
+      timeout: 30000,
+      stdio: 'pipe'
+    });
+
+    // Attempt merge — this will create conflict markers if conflicts exist
+    try {
+      execFileSync('git', ['merge', 'origin/main', '--no-edit'], {
+        cwd: worktreePath,
+        timeout: 30000,
+        stdio: 'pipe'
+      });
+      // No conflicts — merge succeeded cleanly
+      log(`No actual conflicts for #${displayNumber}, merge succeeded locally`);
+      execFileSync('git', ['push', 'origin', branch], {
+        cwd: worktreePath,
+        timeout: 30000,
+        stdio: 'pipe'
+      });
+      cleanupWorktree(displayNumber, projectPath);
+      return true;
+    } catch {
+      // Expected: merge conflicts exist, continue to resolution
+      log(`Conflicts detected for #${displayNumber}, invoking Claude to resolve`);
+    }
+
+    // Use Claude to resolve the conflicts
+    const prompt = [
+      'There are merge conflicts in this repository from merging origin/main.',
+      'Run `git diff` to see the conflict markers.',
+      'Resolve ALL conflicts by choosing the correct code for each one.',
+      'After resolving, stage the files with `git add` and commit with:',
+      `git commit -m "Resolve merge conflicts for task #${displayNumber}"`,
+      'Do NOT push. Just resolve and commit.'
+    ].join(' ');
+
+    execFileSync('claude', [
+      '-p', prompt,
+      '--allowedTools', 'Bash(git *),Read,Edit,Write,Glob,Grep',
+      '--output-format', 'json',
+      '--permission-mode', 'bypassPermissions'
+    ], {
+      cwd: worktreePath,
+      timeout: 120000,  // 2 min for conflict resolution
+      stdio: 'pipe'
+    });
+
+    // Verify the merge completed (no unmerged files remaining)
+    try {
+      const status = execFileSync('git', ['status', '--porcelain'], {
+        cwd: worktreePath,
+        timeout: 10000,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      }).toString();
+
+      if (status.includes('UU ') || status.includes('AA ') || status.includes('DD ')) {
+        logError(`Conflicts not fully resolved for #${displayNumber}`);
+        try { execFileSync('git', ['merge', '--abort'], { cwd: worktreePath, stdio: 'pipe' }); } catch {}
+        cleanupWorktree(displayNumber, projectPath);
+        return false;
+      }
+    } catch {
+      try { execFileSync('git', ['merge', '--abort'], { cwd: worktreePath, stdio: 'pipe' }); } catch {}
+      cleanupWorktree(displayNumber, projectPath);
+      return false;
+    }
+
+    // Push the resolved branch
+    execFileSync('git', ['push', 'origin', branch], {
+      cwd: worktreePath,
+      timeout: 30000,
+      stdio: 'pipe'
+    });
+
+    log(`Conflict resolution pushed for task #${displayNumber}`);
+    cleanupWorktree(displayNumber, projectPath);
+    return true;
+  } catch (e) {
+    logError(`Conflict resolution failed for #${displayNumber}: ${e.message}`);
+    try { execFileSync('git', ['merge', '--abort'], { cwd: worktreePath, stdio: 'pipe' }); } catch {}
+    cleanupWorktree(displayNumber, projectPath);
     return false;
   }
 }
@@ -1243,8 +1377,13 @@ async function handleTaskCompletion(displayNumber, exitCode) {
     // Auto-create PR first so we can include it in the summary
     const prUrl = createPRForTask(displayNumber, summary, projectPath);
 
-    // Ask Claude to summarize what it accomplished
+    // Ask Claude to summarize what it accomplished (needs worktree path)
     const semanticSummary = extractSemanticSummary(worktreePath, sessionId);
+
+    // Clean up worktree BEFORE merge — gh pr merge --delete-branch fails if
+    // the local branch is still referenced by a worktree. The branch itself
+    // is preserved (only the worktree checkout is removed).
+    cleanupWorktree(displayNumber, projectPath);
 
     // Combine: semantic summary first (what), then machine metadata (how)
     let executionSummary = '';
@@ -1308,8 +1447,12 @@ async function handleTaskCompletion(displayNumber, exitCode) {
   } else {
     const stderr = taskInfo.process.stderr?.read()?.toString() || '';
 
-    // Ask Claude to explain what went wrong (if session exists)
+    // Ask Claude to explain what went wrong (needs worktree path)
     const failureSummary = extractSemanticSummary(worktreePath, sessionId);
+
+    // Clean up worktree after summary extraction
+    cleanupWorktree(displayNumber, projectPath);
+
     const errorMsg = failureSummary
       ? `${failureSummary}\nExit code ${exitCode}. Ran for ${durationStr} on ${machineName}.`
       : `Exit code ${exitCode}: ${stderr.slice(0, 200)}`;
@@ -1338,10 +1481,6 @@ async function handleTaskCompletion(displayNumber, exitCode) {
   taskLastOutput.delete(displayNumber);
   taskStdoutBuffer.delete(displayNumber);
   taskProjectPaths.delete(displayNumber);
-
-  // Always clean up worktree — the branch preserves all committed work.
-  // On re-run, createWorktree() recreates from the existing branch.
-  cleanupWorktree(displayNumber, projectPath);
   updateStatusFile();
 }
 
