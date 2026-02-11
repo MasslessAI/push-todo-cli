@@ -901,7 +901,7 @@ async function markTaskAsCompleted(displayNumber, taskId, comment) {
  * Checks for existing branch commits and PRs to avoid redundant re-execution.
  * Returns true if the task was healed (status updated, no re-execution needed).
  */
-async function autoHealExistingWork(displayNumber, summary, projectPath) {
+async function autoHealExistingWork(displayNumber, summary, projectPath, taskId) {
   const suffix = getWorktreeSuffix();
   const branch = `push-${displayNumber}-${suffix}`;
   const gitCwd = projectPath || process.cwd();
@@ -931,7 +931,7 @@ async function autoHealExistingWork(displayNumber, summary, projectPath) {
     let prState = null;
     try {
       const prResult = execSync(
-        `gh pr list --head ${branch} --json url,state --jq '.[0]' 2>/dev/null`,
+        `gh pr list --head ${branch} --state all --json url,state --jq '.[0]' 2>/dev/null`,
         { cwd: gitCwd, timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] }
       ).toString().trim();
       if (prResult) {
@@ -950,25 +950,59 @@ async function autoHealExistingWork(displayNumber, summary, projectPath) {
       await updateTaskStatus(displayNumber, 'session_finished', {
         summary: executionSummary
       });
+
+      // Auto-complete since PR is already merged
+      let status = 'session_finished';
+      if (getAutoCompleteEnabled() && taskId) {
+        const comment = `Auto-healed: PR already merged. ${prUrl}`;
+        const completed = await markTaskAsCompleted(displayNumber, taskId, comment);
+        if (completed) {
+          log(`Task #${displayNumber}: auto-completed (PR was already merged)`);
+          status = 'completed';
+        }
+      }
+
       completedToday.push({
         displayNumber, summary,
         completedAt: new Date().toISOString(),
-        duration: 0, status: 'session_finished', prUrl
+        duration: 0, status, prUrl
       });
       return true;
     }
 
     if (prUrl && prState === 'OPEN') {
-      // PR is open — work is done, just needs review
-      log(`Task #${displayNumber}: PR already open (${prUrl}), updating status`);
-      const executionSummary = `Auto-healed: previous execution completed. PR pending review: ${prUrl}`;
+      log(`Task #${displayNumber}: PR already open (${prUrl}), attempting merge`);
+
+      // Try to merge the existing PR
+      let merged = false;
+      if (getAutoMergeEnabled()) {
+        // Clean up worktree first so gh pr merge --delete-branch can delete the local branch
+        cleanupWorktree(displayNumber, projectPath);
+        merged = mergePRForTask(displayNumber, prUrl, projectPath);
+      }
+
+      const executionSummary = merged
+        ? `Auto-healed: previous PR merged. ${prUrl}`
+        : `Auto-healed: previous execution completed. PR pending review: ${prUrl}`;
       await updateTaskStatus(displayNumber, 'session_finished', {
         summary: executionSummary
       });
+
+      // Auto-complete if merge succeeded
+      let status = 'session_finished';
+      if (getAutoCompleteEnabled() && merged && taskId) {
+        const comment = `Auto-healed and merged. ${prUrl}`;
+        const completed = await markTaskAsCompleted(displayNumber, taskId, comment);
+        if (completed) {
+          log(`Task #${displayNumber}: auto-completed after auto-heal merge`);
+          status = 'completed';
+        }
+      }
+
       completedToday.push({
         displayNumber, summary,
         completedAt: new Date().toISOString(),
-        duration: 0, status: 'session_finished', prUrl
+        duration: 0, status, prUrl
       });
       return true;
     }
@@ -1213,7 +1247,8 @@ async function executeTask(task) {
   }
 
   // Auto-heal: check if previous execution already completed work for this task
-  const healed = await autoHealExistingWork(displayNumber, summary, projectPath);
+  const taskId = task.id || task.todo_id || '';
+  const healed = await autoHealExistingWork(displayNumber, summary, projectPath, taskId);
   if (healed) {
     log(`Task #${displayNumber}: auto-healed from previous execution, skipping re-execution`);
     return null;
@@ -1421,6 +1456,30 @@ async function handleTaskCompletion(displayNumber, exitCode) {
     let merged = false;
     if (getAutoMergeEnabled() && prUrl) {
       merged = mergePRForTask(displayNumber, prUrl, projectPath);
+    }
+
+    // Safety net: if no new PR was created (Claude found work already done),
+    // check if a previous PR for this branch was already merged.
+    // See: docs/20260211_auto_complete_failure_investigation.md (Fix D)
+    if (!prUrl && !merged) {
+      const suffix = getWorktreeSuffix();
+      const branch = `push-${displayNumber}-${suffix}`;
+      try {
+        const prCheck = execFileSync('gh', [
+          'pr', 'list', '--head', branch, '--state', 'merged',
+          '--json', 'url', '--jq', '.[0].url'
+        ], {
+          cwd: projectPath || process.cwd(),
+          timeout: 15000,
+          stdio: ['ignore', 'pipe', 'pipe']
+        }).toString().trim();
+        if (prCheck) {
+          log(`Task #${displayNumber}: found previously merged PR: ${prCheck}`);
+          merged = true;
+        }
+      } catch {
+        // gh not available or no merged PR found
+      }
     }
 
     // Auto-complete task after successful merge (configurable, default ON)
