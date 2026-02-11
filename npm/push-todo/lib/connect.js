@@ -937,6 +937,8 @@ async function registerProjectWithBackend(apiKey, clientType = 'claude-code', ke
   if (data.success) {
     return {
       status: 'success',
+      action_id: data.action_id || null,
+      action_type: data.action_type || null,
       action_name: data.normalized_name || data.action_name || 'Unknown',
       created: data.created !== false,
       message: data.message || ''
@@ -946,17 +948,31 @@ async function registerProjectWithBackend(apiKey, clientType = 'claude-code', ke
   return { status: 'error', message: 'Unknown error' };
 }
 
+// Mapping from CLI client_type to canonical DB action_type
+// Must match CLIENT_TO_ACTION_TYPE in register-project edge function
+const CLIENT_TO_ACTION_TYPE = {
+  'claude-code': 'claude-code',
+  'openai-codex': 'openai-codex',
+  'openclaw': 'clawdbot',
+  'clawdbot': 'clawdbot',
+};
+
 /**
  * Register project in local registry for daemon routing.
+ *
+ * @param {string} gitRemoteRaw - Raw git remote URL
+ * @param {string} localPath - Absolute local path
+ * @param {Object} [actionMeta] - Action metadata from register-project response
+ * @returns {boolean}
  */
-function registerProjectLocally(gitRemoteRaw, localPath) {
+function registerProjectLocally(gitRemoteRaw, localPath, actionMeta = {}) {
   if (!gitRemoteRaw) return false;
 
   const gitRemote = normalizeGitRemote(gitRemoteRaw);
   if (!gitRemote) return false;
 
   const registry = getRegistry();
-  return registry.register(gitRemote, localPath);
+  return registry.register(gitRemote, localPath, actionMeta);
 }
 
 /**
@@ -1128,7 +1144,12 @@ export async function runConnect(options = {}) {
       // Register in local project registry for global daemon routing
       const gitRemoteRaw = getGitRemote();
       const localPath = process.cwd();
-      const isNewLocal = registerProjectLocally(gitRemoteRaw, localPath);
+      const actionType = result.action_type || CLIENT_TO_ACTION_TYPE[clientType] || clientType;
+      const isNewLocal = registerProjectLocally(gitRemoteRaw, localPath, {
+        actionType,
+        actionId: result.action_id,
+        actionName: result.action_name,
+      });
 
       console.log('');
       console.log('  ' + '='.repeat(40));
@@ -1204,7 +1225,11 @@ export async function runConnect(options = {}) {
   // Register in local project registry for global daemon routing
   const gitRemoteRaw = getGitRemote();
   const localPath = process.cwd();
-  const isNewLocal = registerProjectLocally(gitRemoteRaw, localPath);
+  const actionType = CLIENT_TO_ACTION_TYPE[clientType] || clientType;
+  const isNewLocal = registerProjectLocally(gitRemoteRaw, localPath, {
+    actionType,
+    actionName: authResult.action_name,
+  });
 
   // Show success
   console.log('');

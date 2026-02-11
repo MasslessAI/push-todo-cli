@@ -12,7 +12,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 const REGISTRY_FILE = join(homedir(), '.config', 'push', 'projects.json');
-const REGISTRY_VERSION = 1;
+const REGISTRY_VERSION = 2;
 
 /**
  * Project Registry class.
@@ -62,9 +62,52 @@ class ProjectRegistry {
   }
 
   _migrate(data) {
-    // Future: handle migrations as needed
+    const oldVersion = data.version || 0;
+
+    // V1 → V2: Add actionType to project keys
+    // V1 keys: "github.com/user/repo" → V2 keys: "github.com/user/repo::claude-code"
+    // All V1 projects were Claude Code (the only agent type that existed)
+    if (oldVersion < 2 && data.projects) {
+      const newProjects = {};
+      for (const [key, info] of Object.entries(data.projects)) {
+        // Skip if already in V2 format (contains ::)
+        if (key.includes('::')) {
+          newProjects[key] = { ...info, gitRemote: info.gitRemote || key.split('::')[0] };
+          continue;
+        }
+        const v2Key = `${key}::claude-code`;
+        newProjects[v2Key] = {
+          ...info,
+          gitRemote: key,
+          actionType: 'claude-code',
+          actionId: null,
+          actionName: null,
+        };
+      }
+      data.projects = newProjects;
+
+      // Migrate defaultProject key too
+      if (data.defaultProject && !data.defaultProject.includes('::')) {
+        data.defaultProject = `${data.defaultProject}::claude-code`;
+      }
+    }
+
     data.version = REGISTRY_VERSION;
+    // Persist the migrated data immediately
+    writeFileSync(REGISTRY_FILE, JSON.stringify(data, null, 2));
     return data;
+  }
+
+  /**
+   * Build the composite key for a project entry.
+   * Format: "gitRemote::actionType" (e.g., "github.com/user/repo::claude-code")
+   *
+   * @param {string} gitRemote - Normalized git remote
+   * @param {string} actionType - Action type (e.g., "claude-code", "clawdbot")
+   * @returns {string}
+   */
+  _makeKey(gitRemote, actionType) {
+    return `${gitRemote}::${actionType || 'claude-code'}`;
   }
 
   /**
@@ -72,26 +115,38 @@ class ProjectRegistry {
    *
    * @param {string} gitRemote - Normalized git remote (e.g., "github.com/user/repo")
    * @param {string} localPath - Absolute local path
+   * @param {Object} [actionMeta] - Action metadata from register-project response
+   * @param {string} [actionMeta.actionType] - Action type (e.g., "claude-code", "clawdbot")
+   * @param {string} [actionMeta.actionId] - Action UUID
+   * @param {string} [actionMeta.actionName] - Action display name
    * @returns {boolean} True if newly registered, false if updated existing
    */
-  register(gitRemote, localPath) {
-    const isNew = !(gitRemote in this._data.projects);
+  register(gitRemote, localPath, actionMeta = {}) {
+    const actionType = actionMeta.actionType || 'claude-code';
+    const key = this._makeKey(gitRemote, actionType);
+    const isNew = !(key in this._data.projects);
     const now = new Date().toISOString();
 
     if (isNew) {
-      this._data.projects[gitRemote] = {
+      this._data.projects[key] = {
+        gitRemote,
         localPath,
+        actionType,
+        actionId: actionMeta.actionId || null,
+        actionName: actionMeta.actionName || null,
         registeredAt: now,
         lastUsed: now
       };
     } else {
-      this._data.projects[gitRemote].localPath = localPath;
-      this._data.projects[gitRemote].lastUsed = now;
+      this._data.projects[key].localPath = localPath;
+      this._data.projects[key].lastUsed = now;
+      if (actionMeta.actionId) this._data.projects[key].actionId = actionMeta.actionId;
+      if (actionMeta.actionName) this._data.projects[key].actionName = actionMeta.actionName;
     }
 
     // Set as default if first project
     if (this._data.defaultProject === null) {
-      this._data.defaultProject = gitRemote;
+      this._data.defaultProject = key;
     }
 
     this._save();
@@ -99,16 +154,20 @@ class ProjectRegistry {
   }
 
   /**
-   * Get local path for a git remote.
+   * Get local path for a git remote (and optional action type).
    * Updates lastUsed timestamp.
    *
+   * Supports both:
+   * - getPath("github.com/user/repo", "claude-code") → exact match
+   * - getPath("github.com/user/repo") → first match for that repo (backward compat)
+   *
    * @param {string} gitRemote - Normalized git remote
+   * @param {string} [actionType] - Optional action type for exact match
    * @returns {string|null} Local path or null if not registered
    */
-  getPath(gitRemote) {
-    const project = this._data.projects[gitRemote];
+  getPath(gitRemote, actionType) {
+    const project = this._findProject(gitRemote, actionType);
     if (project) {
-      // Update last_used
       project.lastUsed = new Date().toISOString();
       this._save();
       return project.localPath;
@@ -121,55 +180,126 @@ class ProjectRegistry {
    * Useful for status checks and listing operations.
    *
    * @param {string} gitRemote - Normalized git remote
+   * @param {string} [actionType] - Optional action type
    * @returns {string|null} Local path or null if not registered
    */
-  getPathWithoutUpdate(gitRemote) {
-    const project = this._data.projects[gitRemote];
+  getPathWithoutUpdate(gitRemote, actionType) {
+    const project = this._findProject(gitRemote, actionType);
     return project ? project.localPath : null;
   }
 
   /**
-   * List all registered projects.
+   * Find a project entry by gitRemote and optional actionType.
+   * If actionType provided, tries exact composite key first.
+   * Falls back to scanning all entries for matching gitRemote.
+   *
+   * @param {string} gitRemote
+   * @param {string} [actionType]
+   * @returns {Object|null}
+   */
+  _findProject(gitRemote, actionType) {
+    // Try exact composite key first
+    if (actionType) {
+      const key = this._makeKey(gitRemote, actionType);
+      if (key in this._data.projects) {
+        return this._data.projects[key];
+      }
+    }
+
+    // Fall back to scanning for matching gitRemote (backward compat + no actionType case)
+    for (const [key, info] of Object.entries(this._data.projects)) {
+      // V2 format: check the stored gitRemote field
+      if (info.gitRemote === gitRemote) {
+        return info;
+      }
+      // V1 format fallback: key IS the gitRemote (pre-migration)
+      if (key === gitRemote) {
+        return info;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * List all registered projects (backward-compatible format).
+   * Returns unique gitRemote -> localPath mapping (first entry per remote wins).
    *
    * @returns {Object} Dict of gitRemote -> localPath
    */
   listProjects() {
     const result = {};
-    for (const [remote, info] of Object.entries(this._data.projects)) {
-      result[remote] = info.localPath;
+    for (const [_key, info] of Object.entries(this._data.projects)) {
+      const remote = info.gitRemote || _key;
+      // First entry per gitRemote wins (backward compat)
+      if (!(remote in result)) {
+        result[remote] = info.localPath;
+      }
     }
     return result;
   }
 
   /**
    * List all registered projects with full metadata.
+   * V2 format: includes actionType, actionId, gitRemote per entry.
    *
-   * @returns {Object} Dict of gitRemote -> {localPath, registeredAt, lastUsed}
+   * @returns {Object} Dict of compositeKey -> {gitRemote, localPath, actionType, ...}
    */
   listProjectsWithMetadata() {
     return { ...this._data.projects };
   }
 
   /**
-   * Unregister a project.
+   * List all registered projects with action type info.
+   * Returns array of {gitRemote, localPath, actionType} for daemon routing.
    *
-   * @param {string} gitRemote - Normalized git remote
+   * @returns {Array<{gitRemote: string, localPath: string, actionType: string}>}
+   */
+  listProjectsWithActionType() {
+    const result = [];
+    for (const [_key, info] of Object.entries(this._data.projects)) {
+      result.push({
+        gitRemote: info.gitRemote || _key,
+        localPath: info.localPath,
+        actionType: info.actionType || 'claude-code',
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Unregister a project.
+   * Accepts either composite key ("remote::type") or plain gitRemote (removes all entries for that remote).
+   *
+   * @param {string} keyOrRemote - Composite key or plain git remote
    * @returns {boolean} True if was registered, false if not found
    */
-  unregister(gitRemote) {
-    if (gitRemote in this._data.projects) {
-      delete this._data.projects[gitRemote];
+  unregister(keyOrRemote) {
+    let found = false;
 
-      if (this._data.defaultProject === gitRemote) {
-        // Set new default
+    // Try as exact key first
+    if (keyOrRemote in this._data.projects) {
+      delete this._data.projects[keyOrRemote];
+      found = true;
+    } else {
+      // Remove all entries matching this gitRemote
+      for (const [key, info] of Object.entries(this._data.projects)) {
+        if ((info.gitRemote || key) === keyOrRemote) {
+          delete this._data.projects[key];
+          found = true;
+        }
+      }
+    }
+
+    if (found) {
+      // Fix default if needed
+      if (this._data.defaultProject && !(this._data.defaultProject in this._data.projects)) {
         const remaining = Object.keys(this._data.projects);
         this._data.defaultProject = remaining.length > 0 ? remaining[0] : null;
       }
-
       this._save();
-      return true;
     }
-    return false;
+
+    return found;
   }
 
   /**
@@ -183,15 +313,25 @@ class ProjectRegistry {
 
   /**
    * Set a project as the default.
+   * Accepts composite key or plain gitRemote (finds first match).
    *
-   * @param {string} gitRemote
+   * @param {string} keyOrRemote
    * @returns {boolean} True if successful
    */
-  setDefaultProject(gitRemote) {
-    if (gitRemote in this._data.projects) {
-      this._data.defaultProject = gitRemote;
+  setDefaultProject(keyOrRemote) {
+    // Exact key match
+    if (keyOrRemote in this._data.projects) {
+      this._data.defaultProject = keyOrRemote;
       this._save();
       return true;
+    }
+    // Find by gitRemote
+    for (const [key, info] of Object.entries(this._data.projects)) {
+      if ((info.gitRemote || key) === keyOrRemote) {
+        this._data.defaultProject = key;
+        this._save();
+        return true;
+      }
     }
     return false;
   }
@@ -207,12 +347,14 @@ class ProjectRegistry {
 
   /**
    * Check if a project is registered.
+   * Checks both composite keys and plain gitRemote.
    *
    * @param {string} gitRemote
+   * @param {string} [actionType] - Optional action type for exact match
    * @returns {boolean}
    */
-  isRegistered(gitRemote) {
-    return gitRemote in this._data.projects;
+  isRegistered(gitRemote, actionType) {
+    return this._findProject(gitRemote, actionType) !== null;
   }
 
   /**
@@ -223,19 +365,22 @@ class ProjectRegistry {
   validatePaths() {
     const invalid = [];
 
-    for (const [gitRemote, info] of Object.entries(this._data.projects)) {
+    for (const [key, info] of Object.entries(this._data.projects)) {
       const path = info.localPath;
+      const gitRemote = info.gitRemote || key;
 
       try {
         const stats = statSync(path);
         if (!stats.isDirectory()) {
           invalid.push({
+            key,
             gitRemote,
             localPath: path,
             reason: 'not_a_directory'
           });
         } else if (!existsSync(join(path, '.git'))) {
           invalid.push({
+            key,
             gitRemote,
             localPath: path,
             reason: 'not_a_git_repo'
@@ -243,6 +388,7 @@ class ProjectRegistry {
         }
       } catch {
         invalid.push({
+          key,
           gitRemote,
           localPath: path,
           reason: 'path_not_found'

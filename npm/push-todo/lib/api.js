@@ -52,6 +52,9 @@ export async function fetchTasks(gitRemote, options = {}) {
   if (gitRemote) {
     params.set('git_remote', gitRemote);
   }
+  if (options.actionType) {
+    params.set('action_type', options.actionType);
+  }
   if (options.backlogOnly) {
     params.set('later_only', 'true');
   }

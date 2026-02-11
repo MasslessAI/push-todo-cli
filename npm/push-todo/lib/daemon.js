@@ -372,13 +372,19 @@ async function fetchQueuedTasks() {
     const projects = getListedProjects();
     const gitRemotes = Object.keys(projects);
 
+    // Get projects with action type for structured heartbeat (multi-agent support)
+    const projectsWithType = getListedProjectsWithActionType();
+
     // Add machine registry headers for daemon status tracking
     // See: /docs/20260204_daemon_heartbeat_status_indicator_implementation_plan.md (machine_registry table)
     const heartbeatHeaders = {};
     if (machineId && gitRemotes.length > 0) {
       heartbeatHeaders['X-Machine-Id'] = machineId;
       heartbeatHeaders['X-Machine-Name'] = machineName || 'Unknown Mac';
-      heartbeatHeaders['X-Git-Remotes'] = gitRemotes.join(',');
+      // Structured format: "remote::type,remote::type" (backward compat: old parsers split on , and ignore ::)
+      heartbeatHeaders['X-Git-Remotes'] = projectsWithType
+        .map(p => `${p.gitRemote}::${p.actionType}`)
+        .join(',');
       heartbeatHeaders['X-Daemon-Version'] = getVersion();
       heartbeatHeaders['X-Capabilities'] = JSON.stringify(getCapabilities());
     }
@@ -503,19 +509,38 @@ async function claimTask(displayNumber) {
 
 // ==================== Project Registry ====================
 
-function getProjectPath(gitRemote) {
+function getProjectPath(gitRemote, actionType) {
   if (!existsSync(REGISTRY_FILE)) {
     return null;
   }
 
   try {
     const data = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'));
-    return data.projects?.[gitRemote]?.localPath || data.projects?.[gitRemote]?.local_path || null;
+    const projects = data.projects || {};
+
+    // Try exact composite key first (V2 format)
+    if (actionType) {
+      const key = `${gitRemote}::${actionType}`;
+      if (projects[key]) {
+        return projects[key].localPath || projects[key].local_path || null;
+      }
+    }
+
+    // Fall back to scanning for matching gitRemote (V2 or V1 format)
+    for (const [key, info] of Object.entries(projects)) {
+      if ((info.gitRemote || key) === gitRemote) {
+        return info.localPath || info.local_path || null;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
+/**
+ * List all registered projects (backward-compatible: gitRemote -> localPath).
+ */
 function getListedProjects() {
   if (!existsSync(REGISTRY_FILE)) {
     return {};
@@ -524,12 +549,39 @@ function getListedProjects() {
   try {
     const data = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'));
     const result = {};
-    for (const [remote, info] of Object.entries(data.projects || {})) {
-      result[remote] = info.localPath || info.local_path;
+    for (const [key, info] of Object.entries(data.projects || {})) {
+      const remote = info.gitRemote || key;
+      if (!(remote in result)) {
+        result[remote] = info.localPath || info.local_path;
+      }
     }
     return result;
   } catch {
     return {};
+  }
+}
+
+/**
+ * List all registered projects with action type info.
+ * Returns array of {gitRemote, actionType} for structured heartbeat.
+ */
+function getListedProjectsWithActionType() {
+  if (!existsSync(REGISTRY_FILE)) {
+    return [];
+  }
+
+  try {
+    const data = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'));
+    const result = [];
+    for (const [key, info] of Object.entries(data.projects || {})) {
+      result.push({
+        gitRemote: info.gitRemote || key,
+        actionType: info.actionType || 'claude-code',
+      });
+    }
+    return result;
+  } catch {
+    return [];
   }
 }
 
@@ -1200,6 +1252,7 @@ async function executeTask(task) {
 
   const displayNumber = task.displayNumber || task.display_number;
   const gitRemote = task.gitRemote || task.git_remote;
+  const taskActionType = task.actionType || task.action_type || null;
   const summary = task.summary || 'No summary';
   const content = task.normalizedContent || task.normalized_content ||
     task.content || task.summary || 'Work on this task';
@@ -1219,10 +1272,10 @@ async function executeTask(task) {
     return null;
   }
 
-  // Get project path
+  // Get project path (use action_type for multi-agent routing)
   let projectPath = null;
   if (gitRemote) {
-    projectPath = getProjectPath(gitRemote);
+    projectPath = getProjectPath(gitRemote, taskActionType);
     if (!projectPath) {
       log(`Task #${displayNumber}: Project not registered: ${gitRemote}`);
       log("Run '/push-todo connect' in the project directory to register");
