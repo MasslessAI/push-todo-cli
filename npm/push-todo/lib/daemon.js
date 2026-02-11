@@ -439,7 +439,15 @@ async function updateTaskStatus(displayNumber, status, extra = {}) {
     });
 
     const result = await response.json().catch(() => null);
-    return response.ok && result?.success !== false;
+    if (!response.ok) {
+      logError(`Task status update failed: HTTP ${response.status} for #${displayNumber} -> ${status}`);
+      return false;
+    }
+    if (result?.success === false) {
+      logError(`Task status update rejected for #${displayNumber} -> ${status}: ${JSON.stringify(result)}`);
+      return false;
+    }
+    return true;
   } catch (error) {
     logError(`Failed to update task status: ${error.message}`);
     return false;
@@ -754,6 +762,110 @@ async function markTaskAsCompleted(displayNumber, taskId, comment) {
   }
 }
 
+/**
+ * Auto-heal: detect if a previous execution already completed work for this task.
+ * Checks for existing branch commits and PRs to avoid redundant re-execution.
+ * Returns true if the task was healed (status updated, no re-execution needed).
+ */
+async function autoHealExistingWork(displayNumber, summary, projectPath) {
+  const suffix = getWorktreeSuffix();
+  const branch = `push-${displayNumber}-${suffix}`;
+  const gitCwd = projectPath || process.cwd();
+
+  try {
+    // Check if branch has commits ahead of main
+    let hasCommits = false;
+    try {
+      const logResult = execSync(
+        `git log HEAD..origin/${branch} --oneline 2>/dev/null || git log HEAD..${branch} --oneline 2>/dev/null`,
+        { cwd: gitCwd, timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] }
+      ).toString().trim();
+      hasCommits = logResult.length > 0;
+    } catch {
+      // Branch doesn't exist — no previous work
+      return false;
+    }
+
+    if (!hasCommits) {
+      return false;
+    }
+
+    log(`Task #${displayNumber}: found existing commits on branch ${branch}`);
+
+    // Check for existing PR
+    let prUrl = null;
+    let prState = null;
+    try {
+      const prResult = execSync(
+        `gh pr list --head ${branch} --json url,state --jq '.[0]' 2>/dev/null`,
+        { cwd: gitCwd, timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] }
+      ).toString().trim();
+      if (prResult) {
+        const pr = JSON.parse(prResult);
+        prUrl = pr.url;
+        prState = pr.state; // OPEN or MERGED
+      }
+    } catch {
+      // gh not available or no PR found
+    }
+
+    if (prUrl && prState === 'MERGED') {
+      // PR already merged — task is fully done
+      log(`Task #${displayNumber}: PR already merged (${prUrl}), updating status`);
+      const executionSummary = `Auto-healed: previous execution completed and PR merged. PR: ${prUrl}`;
+      await updateTaskStatus(displayNumber, 'session_finished', {
+        summary: executionSummary
+      });
+      completedToday.push({
+        displayNumber, summary,
+        completedAt: new Date().toISOString(),
+        duration: 0, status: 'session_finished', prUrl
+      });
+      return true;
+    }
+
+    if (prUrl && prState === 'OPEN') {
+      // PR is open — work is done, just needs review
+      log(`Task #${displayNumber}: PR already open (${prUrl}), updating status`);
+      const executionSummary = `Auto-healed: previous execution completed. PR pending review: ${prUrl}`;
+      await updateTaskStatus(displayNumber, 'session_finished', {
+        summary: executionSummary
+      });
+      completedToday.push({
+        displayNumber, summary,
+        completedAt: new Date().toISOString(),
+        duration: 0, status: 'session_finished', prUrl
+      });
+      return true;
+    }
+
+    if (!prUrl) {
+      // Commits exist but no PR — create one and update status
+      log(`Task #${displayNumber}: commits exist but no PR, creating PR`);
+      const newPrUrl = createPRForTask(displayNumber, summary, projectPath);
+      if (newPrUrl) {
+        const executionSummary = `Auto-healed: previous execution had uncommitted PR. Created PR: ${newPrUrl}`;
+        await updateTaskStatus(displayNumber, 'session_finished', {
+          summary: executionSummary
+        });
+        completedToday.push({
+          displayNumber, summary,
+          completedAt: new Date().toISOString(),
+          duration: 0, status: 'session_finished', prUrl: newPrUrl
+        });
+        return true;
+      }
+      // PR creation failed — fall through to re-execute
+      log(`Task #${displayNumber}: PR creation failed, will re-execute`);
+    }
+
+    return false;
+  } catch (error) {
+    log(`Task #${displayNumber}: auto-heal check failed: ${error.message}`);
+    return false;
+  }
+}
+
 // ==================== Stuck Detection ====================
 
 function checkStuckPatterns(displayNumber, line) {
@@ -914,7 +1026,7 @@ function updateTaskDetail(displayNumber, updates) {
   updateStatusFile();
 }
 
-function executeTask(task) {
+async function executeTask(task) {
   // Decrypt E2EE fields
   task = decryptTaskFields(task);
 
@@ -951,7 +1063,7 @@ function executeTask(task) {
 
     if (!existsSync(projectPath)) {
       logError(`Task #${displayNumber}: Project path does not exist: ${projectPath}`);
-      updateTaskStatus(displayNumber, 'failed', {
+      await updateTaskStatus(displayNumber, 'failed', {
         error: `Project path not found: ${projectPath}`
       });
       return null;
@@ -960,8 +1072,16 @@ function executeTask(task) {
     log(`Task #${displayNumber}: Project ${gitRemote} -> ${projectPath}`);
   }
 
-  // Atomic task claiming
-  if (!claimTask(displayNumber)) {
+  // Atomic task claiming - must await to actually check the result
+  if (!(await claimTask(displayNumber))) {
+    log(`Task #${displayNumber}: claim failed, skipping`);
+    return null;
+  }
+
+  // Auto-heal: check if previous execution already completed work for this task
+  const healed = await autoHealExistingWork(displayNumber, summary, projectPath);
+  if (healed) {
+    log(`Task #${displayNumber}: auto-healed from previous execution, skipping re-execution`);
     return null;
   }
 
@@ -981,7 +1101,7 @@ function executeTask(task) {
   // Create worktree
   const worktreePath = createWorktree(displayNumber, projectPath);
   if (!worktreePath) {
-    updateTaskStatus(displayNumber, 'failed', { error: 'Failed to create git worktree' });
+    await updateTaskStatus(displayNumber, 'failed', { error: 'Failed to create git worktree' });
     taskDetails.delete(displayNumber);
     return null;
   }
@@ -998,15 +1118,8 @@ IMPORTANT:
 2. ALWAYS commit your changes before finishing. Use a descriptive commit message summarizing what you did. This is critical — uncommitted changes will be lost when the worktree is cleaned up.
 3. When you're done, the SessionEnd hook will automatically report completion to Supabase.`;
 
-  // Update status to running (auto-generates 'started' event)
-  updateTaskStatus(displayNumber, 'running', {
-    event: {
-      type: 'started',
-      timestamp: new Date().toISOString(),
-      machineName: getMachineName() || undefined,
-      summary: summary.slice(0, 100),
-    }
-  });
+  // Note: claimTask() already set status to 'running' with atomic: true
+  // No duplicate status update needed here (was causing race conditions)
 
   // Build Claude command
   const allowedTools = [
@@ -1075,10 +1188,10 @@ IMPORTANT:
       handleTaskCompletion(displayNumber, code);
     });
 
-    child.on('error', (error) => {
+    child.on('error', async (error) => {
       logError(`Task #${displayNumber} error: ${error.message}`);
       runningTasks.delete(displayNumber);
-      updateTaskStatus(displayNumber, 'failed', { error: error.message });
+      await updateTaskStatus(displayNumber, 'failed', { error: error.message });
       taskDetails.delete(displayNumber);
       updateStatusFile();
     });
@@ -1094,13 +1207,13 @@ IMPORTANT:
     return taskInfo;
   } catch (error) {
     logError(`Error starting Claude for task #${displayNumber}: ${error.message}`);
-    updateTaskStatus(displayNumber, 'failed', { error: error.message });
+    await updateTaskStatus(displayNumber, 'failed', { error: error.message });
     taskDetails.delete(displayNumber);
     return null;
   }
 }
 
-function handleTaskCompletion(displayNumber, exitCode) {
+async function handleTaskCompletion(displayNumber, exitCode) {
   const taskInfo = runningTasks.get(displayNumber);
   if (!taskInfo) return;
 
@@ -1143,11 +1256,18 @@ function handleTaskCompletion(displayNumber, exitCode) {
       executionSummary += ` PR: ${prUrl}`;
     }
 
-    updateTaskStatus(displayNumber, 'session_finished', {
+    const statusUpdated = await updateTaskStatus(displayNumber, 'session_finished', {
       duration,
       sessionId,
       summary: executionSummary
     });
+    if (!statusUpdated) {
+      logError(`Task #${displayNumber}: Failed to update status to session_finished — will retry`);
+      // Retry once
+      await updateTaskStatus(displayNumber, 'session_finished', {
+        duration, sessionId, summary: executionSummary
+      });
+    }
 
     if (NOTIFY_ON_COMPLETE) {
       const prNote = prUrl ? ' PR ready for review.' : '';
@@ -1170,7 +1290,10 @@ function handleTaskCompletion(displayNumber, exitCode) {
       const comment = semanticSummary
         ? `${semanticSummary} (${durationStr} on ${machineName})`
         : `Completed in ${durationStr} on ${machineName}`;
-      markTaskAsCompleted(displayNumber, taskId, comment);
+      const completed = await markTaskAsCompleted(displayNumber, taskId, comment);
+      if (!completed) {
+        logError(`Task #${displayNumber}: Failed to mark as completed — status is session_finished but not completed`);
+      }
     }
 
     completedToday.push({
@@ -1191,7 +1314,7 @@ function handleTaskCompletion(displayNumber, exitCode) {
       ? `${failureSummary}\nExit code ${exitCode}. Ran for ${durationStr} on ${machineName}.`
       : `Exit code ${exitCode}: ${stderr.slice(0, 200)}`;
 
-    updateTaskStatus(displayNumber, 'failed', { error: errorMsg });
+    await updateTaskStatus(displayNumber, 'failed', { error: errorMsg });
 
     if (NOTIFY_ON_FAILURE) {
       sendMacNotification(
@@ -1442,7 +1565,13 @@ async function pollAndExecute() {
       continue;
     }
 
-    executeTask(task);
+    // Skip tasks already completed this daemon session (prevents re-execution loop)
+    if (completedToday.some(c => c.displayNumber === displayNumber)) {
+      log(`Task #${displayNumber} already completed this session, skipping`);
+      continue;
+    }
+
+    await executeTask(task);
   }
 
   updateStatusFile();
@@ -1517,10 +1646,11 @@ async function mainLoop() {
 
 // ==================== Signal Handling ====================
 
-function cleanup() {
+async function cleanup() {
   log('Daemon shutting down...');
 
-  // Kill running tasks and mark them as failed in Supabase
+  // Kill running tasks and collect status update promises
+  const statusPromises = [];
   for (const [displayNumber, taskInfo] of runningTasks) {
     log(`Killing task #${displayNumber}`);
     try {
@@ -1528,17 +1658,28 @@ function cleanup() {
     } catch {}
     // Mark as failed so the task doesn't stay as 'running' forever
     const duration = Math.floor((Date.now() - taskInfo.startTime) / 1000);
-    updateTaskStatus(displayNumber, 'failed', {
-      error: `Daemon shutdown after ${duration}s`,
-      event: {
-        type: 'daemon_shutdown',
-        timestamp: new Date().toISOString(),
-        machineName: getMachineName() || undefined,
-        summary: `Daemon restarted after ${duration}s`,
-      }
-    });
+    statusPromises.push(
+      updateTaskStatus(displayNumber, 'failed', {
+        error: `Daemon shutdown after ${duration}s`,
+        event: {
+          type: 'daemon_shutdown',
+          timestamp: new Date().toISOString(),
+          machineName: getMachineName() || undefined,
+          summary: `Daemon restarted after ${duration}s`,
+        }
+      })
+    );
     const projectPath = taskProjectPaths.get(displayNumber);
     cleanupWorktree(displayNumber, projectPath);
+  }
+
+  // Wait for all status updates to land (max 5s timeout)
+  if (statusPromises.length > 0) {
+    log(`Waiting for ${statusPromises.length} status update(s) to complete...`);
+    await Promise.race([
+      Promise.allSettled(statusPromises),
+      new Promise(resolve => setTimeout(resolve, 5000))
+    ]);
   }
 
   // Clean up files
@@ -1555,11 +1696,11 @@ function cleanup() {
   process.exit(0);
 }
 
-process.on('SIGTERM', cleanup);
-process.on('SIGINT', cleanup);
+process.on('SIGTERM', () => cleanup().catch(() => process.exit(1)));
+process.on('SIGINT', () => cleanup().catch(() => process.exit(1)));
 process.on('uncaughtException', (error) => {
   logError(`Uncaught exception: ${error.message}`);
-  cleanup();
+  cleanup().catch(() => process.exit(1));
 });
 
 // ==================== Entry Point ====================
