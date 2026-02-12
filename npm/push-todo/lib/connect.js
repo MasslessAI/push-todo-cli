@@ -953,8 +953,8 @@ async function registerProjectWithBackend(apiKey, clientType = 'claude-code', ke
 const CLIENT_TO_ACTION_TYPE = {
   'claude-code': 'claude-code',
   'openai-codex': 'openai-codex',
-  'openclaw': 'clawdbot',
-  'clawdbot': 'clawdbot',
+  'openclaw': 'openclaw',
+  'clawdbot': 'openclaw',  // legacy alias
 };
 
 // ============================================================================

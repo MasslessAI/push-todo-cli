@@ -103,7 +103,7 @@ class ProjectRegistry {
    * Format: "gitRemote::actionType" (e.g., "github.com/user/repo::claude-code")
    *
    * @param {string} gitRemote - Normalized git remote
-   * @param {string} actionType - Action type (e.g., "claude-code", "clawdbot")
+   * @param {string} actionType - Action type (e.g., "claude-code", "openclaw")
    * @returns {string}
    */
   _makeKey(gitRemote, actionType) {
@@ -116,7 +116,7 @@ class ProjectRegistry {
    * @param {string} gitRemote - Normalized git remote (e.g., "github.com/user/repo")
    * @param {string} localPath - Absolute local path
    * @param {Object} [actionMeta] - Action metadata from register-project response
-   * @param {string} [actionMeta.actionType] - Action type (e.g., "claude-code", "clawdbot")
+   * @param {string} [actionMeta.actionType] - Action type (e.g., "claude-code", "openclaw")
    * @param {string} [actionMeta.actionId] - Action UUID
    * @param {string} [actionMeta.actionName] - Action display name
    * @returns {boolean} True if newly registered, false if updated existing
@@ -343,6 +343,18 @@ class ProjectRegistry {
    */
   projectCount() {
     return Object.keys(this._data.projects).length;
+  }
+
+  /**
+   * Find a project entry by gitRemote and optional actionType.
+   * Public wrapper for _findProject.
+   *
+   * @param {string} gitRemote
+   * @param {string} [actionType]
+   * @returns {Object|null} Project entry with {gitRemote, localPath, actionType, ...}
+   */
+  findProject(gitRemote, actionType) {
+    return this._findProject(gitRemote, actionType);
   }
 
   /**
