@@ -109,8 +109,16 @@ export async function listTasks(options = {}) {
   }
 
   if (decryptedTasks.length === 0) {
-    const scope = gitRemote ? `for ${cyan(gitRemote)}` : 'across all projects';
-    console.log(`No active tasks ${scope}.`);
+    let scope;
+    if (gitRemote) {
+      scope = `for ${cyan(gitRemote)}`;
+    } else if (actionId || actionType) {
+      // Path-based project (e.g., OpenClaw workspace) — scoped to a specific action
+      scope = `for this project (${cyan(actionType || 'unknown')})`;
+    } else {
+      scope = 'across all projects';
+    }
+    console.log(`No active tasks ${scope}. This is normal if no tasks have been assigned to this action yet.`);
     return;
   }
 

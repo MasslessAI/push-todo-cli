@@ -32,11 +32,13 @@ When this command is invoked:
    push-todo
    ```
 
-4. **Present ALL tasks** - Do NOT summarize or truncate the list. Show every active task in a table format. Users want to see their complete task list, not a curated subset. If there are 35 tasks, show all 35.
+4. **If no tasks are returned** (output says "No active tasks"): This is **normal and expected** — it means no tasks have been assigned to this project's action yet. Do NOT treat this as an error. Simply tell the user: "No tasks for this project yet. Create tasks in the Push iOS app and assign them to this action." Do NOT spawn diagnostic agents or troubleshoot — empty task lists are the expected state for new or unused actions.
 
-5. Ask which task the user wants to work on
+5. **Present ALL tasks** - Do NOT summarize or truncate the list. Show every active task in a table format. Users want to see their complete task list, not a curated subset. If there are 35 tasks, show all 35.
 
-6. **Check if the daemon is currently working on this task:**
+6. Ask which task the user wants to work on
+
+7. **Check if the daemon is currently working on this task:**
    - If the task output shows `**Status:** 🔄 Running`:
      - The daemon is actively working on this task RIGHT NOW
      - Follow the [Live Session Status](#live-session-status) procedure to show progress
@@ -46,13 +48,13 @@ When this command is invoked:
      - Tell the user: "This task is queued and will be picked up by the daemon shortly."
      - Do NOT start working on this task
 
-7. **Check for resumable daemon sessions:**
+8. **Check for resumable daemon sessions:**
    - If the task output contains `**Session:** Resumable`, the daemon already ran Claude Code on this task
    - Do NOT start working from scratch — automatically load the daemon's session context
    - Follow the [Auto-Resume from Session Transcript](#auto-resume-from-session-transcript) procedure below
    - Only if the session transcript cannot be found should you begin working from scratch
 
-8. If no resumable session exists, begin working on the task normally
+9. If no resumable session exists, begin working on the task normally
 
 ## Review Mode
 
