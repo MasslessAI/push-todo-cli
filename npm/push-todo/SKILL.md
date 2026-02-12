@@ -54,7 +54,12 @@ When this command is invoked:
    - Follow the [Auto-Resume from Session Transcript](#auto-resume-from-session-transcript) procedure below
    - Only if the session transcript cannot be found should you begin working from scratch
 
-9. If no resumable session exists, begin working on the task normally
+9. **Load task attachments** before starting work:
+   - If the task has **screenshot attachments**: Read each image from `~/Library/Mobile Documents/iCloud~ai~massless~push/Documents/Screenshots/<filename>` using the Read tool. These provide essential visual context.
+   - If the task has **link attachments**: Use WebFetch to read linked content when relevant to the task.
+   - See [Reading Task Attachments](#reading-task-attachments) for full details.
+
+10. If no resumable session exists, begin working on the task normally
 
 ## Review Mode
 
@@ -338,6 +343,57 @@ Do NOT offer to start working on the task — the daemon is already handling it.
 
 If the session file cannot be found (daemon just started, no output yet):
 - Tell the user: "The daemon just started working on this task. Run `/push-todo <number>` again in a minute for a progress update."
+
+## Reading Task Attachments
+
+Tasks can have **screenshot images** and **reference links** attached. When working on a task, always check for and use these attachments — they provide critical visual and reference context.
+
+### Screenshot Attachments
+
+Screenshots are images captured from the user's phone screen when creating the task. They're stored in **iCloud Documents** and synced to the Mac automatically.
+
+**When the task output shows an Attachments > Screenshots section:**
+
+1. **Get the filename** from the task output (e.g., `ABC123.png`)
+2. **Read the image** directly from the iCloud folder:
+   ```
+   ~/Library/Mobile Documents/iCloud~ai~massless~push/Documents/Screenshots/<filename>
+   ```
+3. **Use the Read tool** to view the image — Claude Code is multimodal and can interpret screenshots
+
+Example:
+```bash
+# The task shows: "1. ABC123.png (1170x2532)"
+# Read it directly:
+```
+Then use the Read tool on:
+`~/Library/Mobile Documents/iCloud~ai~massless~push/Documents/Screenshots/ABC123.png`
+
+**Why this matters:** Screenshots often contain the actual UI, error message, design mockup, or reference material the user was looking at when they created the task. The voice transcript alone may say "fix this" — the screenshot shows WHAT to fix.
+
+**If the file doesn't exist locally:** iCloud may not have synced it yet. Tell the user: "The screenshot hasn't synced from iCloud yet. Try opening Finder > iCloud Drive > Push > Screenshots to trigger the download."
+
+### Link Attachments
+
+Links are reference URLs the user shared when creating the task (e.g., from Safari, WeChat, or other apps).
+
+**When the task output shows an Attachments > Links section:**
+
+1. Links are displayed as clickable markdown: `🔗 [Title](URL)`
+2. **Use WebFetch** to read the linked content when relevant to the task
+3. The `contextApp` field shows which app the link came from (e.g., "Safari", "WeChat")
+
+### Programmatic Access (JSON mode)
+
+For scripts or when you need raw attachment data:
+```bash
+push-todo <number> --json
+```
+
+Key JSON fields:
+- `screenshotAttachmentsJson` — JSON string array of `{id, imageFilename, width, height, capturedAt, sourceApp}`
+- `linkAttachmentsJson` — JSON string array of `{id, url, title, createdAt}`
+- `contextApp` — App the user was in when creating the task
 
 ## CLI Reference
 
