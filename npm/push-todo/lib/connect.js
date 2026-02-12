@@ -12,7 +12,7 @@
  * Ported from: plugins/push-todo/scripts/connect.py (1866 lines)
  */
 
-import { execSync, spawnSync, spawn } from 'child_process';
+import { execSync, execFileSync, spawnSync, spawn } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync } from 'fs';
 import { setTimeout as sleep } from 'timers/promises';
 import { homedir } from 'os';
@@ -957,6 +957,94 @@ const CLIENT_TO_ACTION_TYPE = {
   'clawdbot': 'clawdbot',
 };
 
+// ============================================================================
+// AGENT CALLER DETECTION
+// ============================================================================
+// See: /docs/20260212_agent_caller_identity_detection_investigation_and_implementation_plan.md
+
+// Known agent process names -> client_type mapping
+const PROCESS_NAME_TO_CLIENT = {
+  'claude': 'claude-code',
+  'openclaw': 'openclaw',
+  'openclaw-tui': 'openclaw',
+  'codex': 'openai-codex',
+};
+
+/**
+ * Walk up the process tree and collect ancestor process names.
+ * Uses execFileSync (no shell) for safety. Works on macOS and Linux.
+ */
+function getAncestorProcessNames(maxDepth = 8) {
+  const names = [];
+  let pid = process.ppid;
+
+  for (let i = 0; i < maxDepth && pid > 1; i++) {
+    try {
+      const info = execFileSync('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], {
+        encoding: 'utf8',
+        timeout: 1000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+
+      const match = info.match(/^\s*(\d+)\s+(.+)$/);
+      if (!match) break;
+
+      const comm = match[2].trim();
+      const name = comm.split('/').pop();
+      names.push(name);
+      pid = parseInt(match[1]);
+    } catch {
+      break;
+    }
+  }
+
+  return names;
+}
+
+/**
+ * Detect which AI agent is calling us.
+ *
+ * Detection layers (in order of reliability):
+ * 1. Explicit --client flag (manual override, always wins)
+ * 2. Environment variables (agent explicitly identifies itself)
+ * 3. Process tree inspection (universal, no agent cooperation needed)
+ * 4. Default to 'claude-code' (backward compatibility)
+ *
+ * @param {string|undefined} explicitClient - Value from --client flag
+ * @returns {{ clientType: string, method: string }}
+ */
+function detectCallerAgent(explicitClient) {
+  // Layer 1: Explicit --client flag always wins
+  if (explicitClient) {
+    return { clientType: explicitClient, method: 'flag' };
+  }
+
+  // Layer 2: Known environment variables
+  if (process.env.CLAUDECODE === '1') {
+    return { clientType: 'claude-code', method: 'env' };
+  }
+
+  // Layer 3: Process tree inspection
+  try {
+    const ancestors = getAncestorProcessNames();
+    for (const name of ancestors) {
+      if (PROCESS_NAME_TO_CLIENT[name]) {
+        return { clientType: PROCESS_NAME_TO_CLIENT[name], method: 'process-tree' };
+      }
+      for (const [processName, clientType] of Object.entries(PROCESS_NAME_TO_CLIENT)) {
+        if (name.startsWith(processName)) {
+          return { clientType, method: 'process-tree' };
+        }
+      }
+    }
+  } catch {
+    // Process tree inspection failed — continue to default
+  }
+
+  // Layer 4: Default (backward compatibility)
+  return { clientType: 'claude-code', method: 'default' };
+}
+
 /**
  * Register project in local registry for daemon routing.
  *
@@ -1053,8 +1141,9 @@ export async function runConnect(options = {}) {
   // Self-healing: ensure daemon is running
   ensureDaemonRunning();
 
-  // Auto-detect client type from installation method
-  let clientType = options.client || 'claude-code';
+  // Auto-detect calling agent (Claude Code, OpenClaw, Codex, etc.)
+  const detection = detectCallerAgent(options.client);
+  let clientType = detection.clientType;
   const clientName = CLIENT_NAMES[clientType] || 'Claude Code';
 
   // Handle --check-version (JSON output)
@@ -1112,6 +1201,9 @@ export async function runConnect(options = {}) {
   console.log('');
   console.log(`  Push Voice Tasks Connect`);
   console.log('  ' + '='.repeat(40));
+  if (detection.method !== 'default') {
+    console.log(`  Agent: ${clientName} (detected via ${detection.method})`);
+  }
   console.log('');
 
   // Step 1: Check for updates

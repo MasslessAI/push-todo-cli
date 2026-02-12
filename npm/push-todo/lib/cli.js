@@ -93,6 +93,14 @@ ${bold('CONNECT OPTIONS:')}
   --store-e2ee-key <key>           Import E2EE encryption key
   --description <text>             Project description (with connect)
 
+${bold('CONFIRM (for daemon skills):')}
+  push-todo confirm --type "social_post" --title "Post tweet" --content "..."
+  --type <type>                    Confirmation category (social_post, email, etc.)
+  --title <text>                   Short description of the action
+  --content <text>                 Content to be confirmed
+  --metadata <json>                Optional JSON metadata for rich rendering
+  --task <number>                  Display number (auto-detected in daemon)
+
 ${bold('SETTINGS:')}
   push-todo setting                Show all settings
   push-todo setting auto-commit    Toggle auto-commit
@@ -135,7 +143,13 @@ const options = {
   'validate-key': { type: 'boolean' },
   'validate-project': { type: 'boolean' },
   'store-e2ee-key': { type: 'string' },
-  'description': { type: 'string' }
+  'description': { type: 'string' },
+  // Confirm command options
+  'type': { type: 'string' },
+  'title': { type: 'string' },
+  'content': { type: 'string' },
+  'metadata': { type: 'string' },
+  'task': { type: 'string' },
 };
 
 /**
@@ -464,6 +478,12 @@ export async function run(argv) {
 
   // Get the command (first positional)
   const command = positionals[0];
+
+  // Confirm command - request user confirmation for irreversible actions
+  if (command === 'confirm') {
+    const { requestConfirmation } = await import('./confirm.js');
+    return requestConfirmation(values, positionals);
+  }
 
   // Connect command
   if (command === 'connect') {

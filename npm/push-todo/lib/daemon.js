@@ -1152,6 +1152,10 @@ function monitorTaskStdout(displayNumber, proc) {
 }
 
 function checkTaskIdle(displayNumber) {
+  // Skip idle check for tasks awaiting user confirmation
+  const info = taskDetails.get(displayNumber) || {};
+  if (info.phase === 'awaiting_confirmation') return false;
+
   const lastOutput = taskLastOutput.get(displayNumber);
   if (!lastOutput) return false;
 
@@ -1392,6 +1396,14 @@ IMPORTANT:
           buffer.push(line);
           if (buffer.length > 20) buffer.shift();
           taskStdoutBuffer.set(displayNumber, buffer);
+
+          // Detect confirmation waiting (exempt from timeouts)
+          if (line.includes('[push-confirm] Waiting for')) {
+            updateTaskDetail(displayNumber, {
+              phase: 'awaiting_confirmation',
+              detail: 'Waiting for user confirmation on iPhone'
+            });
+          }
 
           const stuckReason = checkStuckPatterns(displayNumber, line);
           if (stuckReason) {
@@ -1675,6 +1687,13 @@ async function checkTimeouts() {
   const timedOut = [];
 
   for (const [displayNumber, taskInfo] of runningTasks) {
+    const info = taskDetails.get(displayNumber) || {};
+
+    // Skip timeout checks for tasks awaiting user confirmation on iPhone
+    if (info.phase === 'awaiting_confirmation') {
+      continue;
+    }
+
     const elapsed = now - taskInfo.startTime;
 
     if (elapsed > TASK_TIMEOUT_MS) {
