@@ -393,7 +393,8 @@ export async function run(argv) {
         process.exit(1);
       }
 
-      const screenshots = task.screenshot_attachments || task.screenshotAttachments || [];
+      const raw = task.screenshotAttachmentsJson || task.screenshotAttachments || task.screenshot_attachments;
+      const screenshots = !raw ? [] : Array.isArray(raw) ? raw : (() => { try { return JSON.parse(raw); } catch { return []; } })();
       if (screenshots.length === 0) {
         console.error(red(`Task #${displayNumber} has no screenshot attachments`));
         process.exit(1);

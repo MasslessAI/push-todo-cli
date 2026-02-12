@@ -7,6 +7,18 @@
 import { bold, dim, green, yellow, red, cyan, muted, symbols } from './colors.js';
 
 /**
+ * Parse a JSON string field into an array. Handles strings, arrays, null/undefined.
+ */
+function parseJsonField(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch { return []; }
+  }
+  return [];
+}
+
+/**
  * Format a duration in seconds to human-readable string.
  *
  * @param {number} seconds
@@ -85,9 +97,9 @@ export function formatTaskForDisplay(task) {
   lines.push(task.content || task.normalizedContent || 'No content');
   lines.push('');
 
-  // Attachments
-  const screenshots = task.screenshotAttachments || task.screenshot_attachments || [];
-  const links = task.linkAttachments || task.link_attachments || [];
+  // Attachments — API returns JSON strings (screenshotAttachmentsJson, linkAttachmentsJson)
+  const screenshots = parseJsonField(task.screenshotAttachmentsJson || task.screenshotAttachments || task.screenshot_attachments);
+  const links = parseJsonField(task.linkAttachmentsJson || task.linkAttachments || task.link_attachments);
 
   if (screenshots.length > 0 || links.length > 0) {
     lines.push('### Attachments');
