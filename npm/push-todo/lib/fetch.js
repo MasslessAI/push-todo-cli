@@ -58,20 +58,33 @@ function decryptTaskFields(task) {
  * @returns {Promise<void>}
  */
 export async function listTasks(options = {}) {
-  // Determine git remote and action type for scoping
+  // Determine git remote, action type, and action ID for scoping
   let gitRemote = null;
   let actionType = null;
+  let actionId = null;
   if (!options.allProjects) {
     gitRemote = getGitRemote();
     if (!gitRemote && isGitRepo()) {
       console.error(yellow('Warning: In a git repo but no remote configured.'));
     }
-    // Look up action type from project registry for proper multi-agent scoping
+
+    const registry = getRegistry();
     if (gitRemote) {
-      const registry = getRegistry();
+      // Git project: look up action type from registry
       const project = registry.findProject(gitRemote);
       if (project) {
         actionType = project.actionType;
+      }
+    } else {
+      // Non-git project (e.g., OpenClaw workspace): look up by cwd path
+      const pathKey = `path:${process.cwd()}`;
+      const project = registry.findProject(pathKey);
+      if (project) {
+        actionType = project.actionType;
+        // For path-based projects, use action_id directly since there's no git_remote
+        if (project.actionId) {
+          actionId = project.actionId;
+        }
       }
     }
   }
@@ -83,6 +96,7 @@ export async function listTasks(options = {}) {
     completedOnly: options.completed,
     includeCompleted: options.includeCompleted,
     actionType,
+    actionId,
   });
 
   // Decrypt if E2EE is available

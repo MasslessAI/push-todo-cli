@@ -49,7 +49,9 @@ async function apiRequest(endpoint, options = {}) {
 export async function fetchTasks(gitRemote, options = {}) {
   const params = new URLSearchParams();
 
-  if (gitRemote) {
+  if (options.actionId) {
+    params.set('action_id', options.actionId);
+  } else if (gitRemote) {
     params.set('git_remote', gitRemote);
   }
   if (options.actionType) {

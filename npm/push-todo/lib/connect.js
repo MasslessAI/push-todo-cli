@@ -1048,19 +1048,32 @@ function detectCallerAgent(explicitClient) {
 /**
  * Register project in local registry for daemon routing.
  *
- * @param {string} gitRemoteRaw - Raw git remote URL
+ * Supports both git-remote-based and path-based projects.
+ * - Git projects: key is "gitRemote::actionType"
+ * - Non-git projects (e.g., OpenClaw workspace): key is "path:/abs/path::actionType"
+ *
+ * @param {string} gitRemoteRaw - Raw git remote URL (can be null for non-git projects)
  * @param {string} localPath - Absolute local path
  * @param {Object} [actionMeta] - Action metadata from register-project response
  * @returns {boolean}
  */
 function registerProjectLocally(gitRemoteRaw, localPath, actionMeta = {}) {
-  if (!gitRemoteRaw) return false;
-
-  const gitRemote = normalizeGitRemote(gitRemoteRaw);
-  if (!gitRemote) return false;
-
   const registry = getRegistry();
-  return registry.register(gitRemote, localPath, actionMeta);
+
+  if (gitRemoteRaw) {
+    const gitRemote = normalizeGitRemote(gitRemoteRaw);
+    if (gitRemote) {
+      return registry.register(gitRemote, localPath, actionMeta);
+    }
+  }
+
+  // Non-git project: use path-based key (e.g., OpenClaw workspace)
+  if (localPath) {
+    const pathKey = `path:${localPath}`;
+    return registry.register(pathKey, localPath, actionMeta);
+  }
+
+  return false;
 }
 
 /**
