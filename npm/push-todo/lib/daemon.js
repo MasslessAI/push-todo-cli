@@ -78,6 +78,7 @@ const PID_FILE = join(PUSH_DIR, 'daemon.pid');
 const LOG_FILE = join(PUSH_DIR, 'daemon.log');
 const STATUS_FILE = join(PUSH_DIR, 'daemon_status.json');
 const VERSION_FILE = join(PUSH_DIR, 'daemon.version');
+const LOCK_FILE = join(PUSH_DIR, 'daemon.lock');
 const CONFIG_FILE = join(CONFIG_DIR, 'config');
 const MACHINE_ID_FILE = join(CONFIG_DIR, 'machine_id');
 const REGISTRY_FILE = join(CONFIG_DIR, 'projects.json');
@@ -90,6 +91,14 @@ const LOG_BACKUP_COUNT = 3;
 const runningTasks = new Map(); // displayNumber -> taskInfo
 const taskDetails = new Map();  // displayNumber -> details
 const completedToday = [];
+const COMPLETED_TODAY_MAX = 100;
+
+function trackCompleted(entry) {
+  completedToday.push(entry);
+  if (completedToday.length > COMPLETED_TODAY_MAX) {
+    completedToday.splice(0, completedToday.length - COMPLETED_TODAY_MAX);
+  }
+}
 const taskLastOutput = new Map(); // displayNumber -> timestamp
 const taskStdoutBuffer = new Map(); // displayNumber -> lines[]
 const taskStderrBuffer = new Map(); // displayNumber -> lines[]
@@ -126,7 +135,7 @@ function rotateLogs() {
 
 function log(message, level = 'INFO') {
   const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] [${level}] ${message}\n`;
+  const line = `[${timestamp}] [PID:${process.pid}] [${level}] ${message}\n`;
 
   if (process.env.PUSH_DAEMON !== '1') {
     process.stdout.write(line);
@@ -139,6 +148,38 @@ function log(message, level = 'INFO') {
 
 function logError(message) {
   log(message, 'ERROR');
+}
+
+// ==================== Lock File ====================
+
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireLock() {
+  try {
+    if (existsSync(LOCK_FILE)) {
+      const holderPid = parseInt(readFileSync(LOCK_FILE, 'utf8').trim(), 10);
+      if (!isNaN(holderPid) && holderPid !== process.pid && isProcessRunning(holderPid)) {
+        return false;
+      }
+      // Holder is dead or is us — clean up stale lock
+      try { unlinkSync(LOCK_FILE); } catch {}
+    }
+    writeFileSync(LOCK_FILE, String(process.pid));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseLock() {
+  try { unlinkSync(LOCK_FILE); } catch {}
 }
 
 // ==================== Mac Notifications ====================
@@ -1025,7 +1066,7 @@ async function autoHealExistingWork(displayNumber, summary, projectPath, taskId)
         }
       }
 
-      completedToday.push({
+      trackCompleted({
         displayNumber, summary,
         completedAt: new Date().toISOString(),
         duration: 0, status, prUrl
@@ -1062,7 +1103,7 @@ async function autoHealExistingWork(displayNumber, summary, projectPath, taskId)
         }
       }
 
-      completedToday.push({
+      trackCompleted({
         displayNumber, summary,
         completedAt: new Date().toISOString(),
         duration: 0, status, prUrl
@@ -1079,7 +1120,7 @@ async function autoHealExistingWork(displayNumber, summary, projectPath, taskId)
         await updateTaskStatus(displayNumber, 'session_finished', {
           summary: executionSummary
         });
-        completedToday.push({
+        trackCompleted({
           displayNumber, summary,
           completedAt: new Date().toISOString(),
           duration: 0, status: 'session_finished', prUrl: newPrUrl
@@ -1585,7 +1626,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       }
     }
 
-    completedToday.push({
+    trackCompleted({
       displayNumber,
       summary,
       completedAt: new Date().toISOString(),
@@ -1621,7 +1662,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       );
     }
 
-    completedToday.push({
+    trackCompleted({
       displayNumber,
       summary,
       completedAt: new Date().toISOString(),
@@ -1765,7 +1806,7 @@ async function checkTimeouts() {
       );
     }
 
-    completedToday.push({
+    trackCompleted({
       displayNumber,
       summary: info.summary || 'Unknown task',
       completedAt: new Date().toISOString(),
@@ -2043,6 +2084,7 @@ async function cleanup() {
   }
 
   // Clean up files
+  releaseLock();
   try { unlinkSync(PID_FILE); } catch {}
 
   // Update status
@@ -2071,6 +2113,15 @@ mkdirSync(CONFIG_DIR, { recursive: true });
 
 // Rotate logs
 rotateLogs();
+
+// Acquire lock (prevents zombie daemons from racing)
+if (!acquireLock()) {
+  const holderPid = parseInt(readFileSync(LOCK_FILE, 'utf8').trim(), 10);
+  // Log to file directly since log() may not work yet
+  const msg = `[${new Date().toISOString()}] [PID:${process.pid}] [INFO] Another daemon (PID ${holderPid}) holds the lock. Exiting.\n`;
+  try { appendFileSync(LOG_FILE, msg); } catch {}
+  process.exit(0);
+}
 
 // Write PID file
 writeFileSync(PID_FILE, String(process.pid));

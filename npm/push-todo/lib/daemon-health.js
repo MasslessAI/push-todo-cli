@@ -125,7 +125,7 @@ function killOrphanedDaemons() {
     const trackedPid = existsSync(PID_FILE)
       ? parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10)
       : null;
-    const output = execFileSync('pgrep', ['-f', 'node.*daemon\\.js'], {
+    const output = execFileSync('pgrep', ['-f', 'push-todo.*daemon\\.js'], {
       encoding: 'utf8',
       timeout: 5000
     }).trim();
