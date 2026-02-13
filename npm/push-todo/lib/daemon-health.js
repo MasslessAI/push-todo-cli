@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -117,6 +117,30 @@ function formatUptime(startedAt) {
 }
 
 /**
+ * Kill any orphaned daemon processes not tracked by PID file.
+ * Prevents zombie daemons from racing the real daemon for tasks.
+ */
+function killOrphanedDaemons() {
+  try {
+    const trackedPid = existsSync(PID_FILE)
+      ? parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10)
+      : null;
+    const output = execFileSync('pgrep', ['-f', 'node.*daemon\\.js'], {
+      encoding: 'utf8',
+      timeout: 5000
+    }).trim();
+    for (const line of output.split('\n')) {
+      const pid = parseInt(line.trim(), 10);
+      if (!isNaN(pid) && pid !== trackedPid && pid !== process.pid) {
+        try { process.kill(pid, 'SIGTERM'); } catch {}
+      }
+    }
+  } catch {
+    // pgrep not found or no matches — both fine
+  }
+}
+
+/**
  * Start the daemon process.
  * Same as Python's start_daemon().
  */
@@ -125,6 +149,9 @@ export function startDaemon() {
   if (status.running) {
     return true;
   }
+
+  // Kill any zombie daemons before starting fresh
+  killOrphanedDaemons();
 
   mkdirSync(PUSH_DIR, { recursive: true });
 
@@ -141,6 +168,7 @@ export function startDaemon() {
       env: (() => {
         const env = { ...process.env, PUSH_DAEMON: '1' };
         delete env.CLAUDECODE;  // Strip to avoid leaking into Claude child processes
+        delete env.CLAUDE_CODE_ENTRYPOINT;  // Strip to avoid any entrypoint-based guards
         return env;
       })()
     });

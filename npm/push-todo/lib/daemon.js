@@ -92,6 +92,7 @@ const taskDetails = new Map();  // displayNumber -> details
 const completedToday = [];
 const taskLastOutput = new Map(); // displayNumber -> timestamp
 const taskStdoutBuffer = new Map(); // displayNumber -> lines[]
+const taskStderrBuffer = new Map(); // displayNumber -> lines[]
 const taskProjectPaths = new Map(); // displayNumber -> projectPath
 let daemonStartTime = null;
 
@@ -1380,6 +1381,7 @@ IMPORTANT:
       env: (() => {
         const env = { ...process.env, PUSH_TASK_ID: task.id, PUSH_DISPLAY_NUMBER: String(displayNumber) };
         delete env.CLAUDECODE;  // Strip to avoid "nested session" guard in Claude Code
+        delete env.CLAUDE_CODE_ENTRYPOINT;  // Strip to avoid any entrypoint-based guards
         return env;
       })()
     });
@@ -1395,6 +1397,20 @@ IMPORTANT:
     runningTasks.set(displayNumber, taskInfo);
     taskLastOutput.set(displayNumber, Date.now());
     taskStdoutBuffer.set(displayNumber, []);
+    taskStderrBuffer.set(displayNumber, []);
+
+    // Monitor stderr (critical for diagnosing fast exits)
+    child.stderr.on('data', (data) => {
+      const lines = data.toString().split('\n');
+      for (const line of lines) {
+        if (line.trim()) {
+          const buffer = taskStderrBuffer.get(displayNumber) || [];
+          buffer.push(line);
+          if (buffer.length > 20) buffer.shift();
+          taskStderrBuffer.set(displayNumber, buffer);
+        }
+      }
+    });
 
     // Monitor stdout
     child.stdout.on('data', (data) => {
@@ -1579,7 +1595,11 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       sessionId
     });
   } else {
-    const stderr = taskInfo.process.stderr?.read()?.toString() || '';
+    const stderrLines = taskStderrBuffer.get(displayNumber) || [];
+    const stderr = stderrLines.join('\n');
+    if (stderr) {
+      log(`Task #${displayNumber} stderr: ${stderr.slice(0, 500)}`);
+    }
 
     // Ask Claude to explain what went wrong (needs worktree path)
     const failureSummary = extractSemanticSummary(worktreePath, sessionId);
@@ -1614,6 +1634,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
   taskDetails.delete(displayNumber);
   taskLastOutput.delete(displayNumber);
   taskStdoutBuffer.delete(displayNumber);
+  taskStderrBuffer.delete(displayNumber);
   taskProjectPaths.delete(displayNumber);
   updateStatusFile();
 }
@@ -1757,6 +1778,7 @@ async function checkTimeouts() {
     taskDetails.delete(displayNumber);
     taskLastOutput.delete(displayNumber);
     taskStdoutBuffer.delete(displayNumber);
+    taskStderrBuffer.delete(displayNumber);
     taskProjectPaths.delete(displayNumber);
     cleanupWorktree(displayNumber, projectPath);
   }
@@ -1799,6 +1821,7 @@ function checkAndApplyUpdate() {
       const daemonScript = join(__dirname, 'daemon.js');
       const selfUpdateEnv = { ...process.env, PUSH_DAEMON: '1' };
       delete selfUpdateEnv.CLAUDECODE;  // Strip to avoid leaking into Claude child processes
+      delete selfUpdateEnv.CLAUDE_CODE_ENTRYPOINT;  // Strip to avoid any entrypoint-based guards
       const child = spawn(process.execPath, [daemonScript], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'],
