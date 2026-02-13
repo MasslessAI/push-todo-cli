@@ -138,7 +138,11 @@ export function startDaemon() {
     const child = spawn(process.execPath, [daemonScript], {
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],
-      env: { ...process.env, PUSH_DAEMON: '1' }
+      env: (() => {
+        const env = { ...process.env, PUSH_DAEMON: '1' };
+        delete env.CLAUDECODE;  // Strip to avoid leaking into Claude child processes
+        return env;
+      })()
     });
 
     writeFileSync(PID_FILE, String(child.pid));

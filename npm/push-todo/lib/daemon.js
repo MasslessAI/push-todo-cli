@@ -1797,10 +1797,12 @@ function checkAndApplyUpdate() {
 
       // Spawn new daemon from updated code, then exit
       const daemonScript = join(__dirname, 'daemon.js');
+      const selfUpdateEnv = { ...process.env, PUSH_DAEMON: '1' };
+      delete selfUpdateEnv.CLAUDECODE;  // Strip to avoid leaking into Claude child processes
       const child = spawn(process.execPath, [daemonScript], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'],
-        env: { ...process.env, PUSH_DAEMON: '1' }
+        env: selfUpdateEnv
       });
       writeFileSync(PID_FILE, String(child.pid));
       child.unref();
