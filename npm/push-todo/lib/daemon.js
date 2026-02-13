@@ -1011,6 +1011,24 @@ async function markTaskAsCompleted(displayNumber, taskId, comment) {
   }
 }
 
+async function hasApprovedConfirmation(displayNumber) {
+  try {
+    const response = await apiRequest(`synced-todos?display_number=${displayNumber}`);
+    if (!response.ok) return false;
+    const data = await response.json();
+    const todos = data.todos || [];
+    if (todos.length === 0) return false;
+    const events = parseJsonField(todos[0].executionEventsJson);
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].type === 'confirmation_approved') return true;
+      if (events[i].type === 'confirmation_rejected') return false;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Auto-heal: detect if a previous execution already completed work for this task.
  * Checks for existing branch commits and PRs to avoid redundant re-execution.
@@ -1653,15 +1671,36 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       }
     }
 
-    // Auto-complete task after successful merge (configurable, default ON)
+    // Auto-complete task (configurable, default ON)
     const taskId = info.taskId;
-    if (getAutoCompleteEnabled() && merged && taskId) {
-      const comment = semanticSummary
-        ? `${semanticSummary} (${durationStr} on ${machineName})`
-        : `Completed in ${durationStr} on ${machineName}`;
-      const completed = await markTaskAsCompleted(displayNumber, taskId, comment);
-      if (!completed) {
-        logError(`Task #${displayNumber}: Failed to mark as completed — status is session_finished but not completed`);
+    let autoCompleted = false;
+
+    if (getAutoCompleteEnabled() && taskId) {
+      // Path 1: PR merge (code tasks)
+      if (merged) {
+        const comment = semanticSummary
+          ? `${semanticSummary} (${durationStr} on ${machineName})`
+          : `Completed in ${durationStr} on ${machineName}`;
+        autoCompleted = await markTaskAsCompleted(displayNumber, taskId, comment);
+        if (!autoCompleted) {
+          logError(`Task #${displayNumber}: Failed to mark as completed after merge`);
+        }
+      }
+
+      // Path 2: Confirmation approval (content tasks — tweets, emails, etc.)
+      // If user approved a confirmation AND Claude exited cleanly, the task is done.
+      if (!autoCompleted && !merged) {
+        const approved = await hasApprovedConfirmation(displayNumber);
+        if (approved) {
+          log(`Task #${displayNumber}: user-approved confirmation detected, auto-completing`);
+          const comment = semanticSummary
+            ? `${semanticSummary} (${durationStr} on ${machineName})`
+            : `Confirmed and completed in ${durationStr} on ${machineName}`;
+          autoCompleted = await markTaskAsCompleted(displayNumber, taskId, comment);
+          if (!autoCompleted) {
+            logError(`Task #${displayNumber}: Failed to mark as completed after confirmation`);
+          }
+        }
       }
     }
 
@@ -1670,7 +1709,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       summary,
       completedAt: new Date().toISOString(),
       duration,
-      status: merged ? 'completed' : 'session_finished',
+      status: autoCompleted ? 'completed' : 'session_finished',
       prUrl,
       sessionId
     });
