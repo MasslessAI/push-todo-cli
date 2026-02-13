@@ -250,6 +250,7 @@ async function trackActiveTask(task) {
   const machineId = getMachineId();
   const machineName = getMachineName();
   await api.updateTaskExecution({
+    todoId: task.id || undefined,
     displayNumber: task.displayNumber,
     status: 'running',
     machineId,

@@ -78,6 +78,7 @@ async function reportSessionFinished(apiKey, activeTask) {
     : null;
 
   const payload = {
+    todoId: activeTask.taskId || undefined,
     displayNumber: activeTask.displayNumber,
     status: 'session_finished',
     machineId,

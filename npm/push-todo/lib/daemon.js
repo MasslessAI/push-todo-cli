@@ -406,13 +406,17 @@ async function fetchQueuedTasks() {
   }
 }
 
-async function updateTaskStatus(displayNumber, status, extra = {}) {
+async function updateTaskStatus(displayNumber, status, extra = {}, todoId = null) {
   try {
     const payload = {
       displayNumber,
       status,
       ...extra
     };
+    // Prefer UUID for API lookup (displayNumber kept for backward compat)
+    if (todoId) {
+      payload.todoId = todoId;
+    }
 
     const machineId = getMachineId();
     const machineName = getMachineName();
@@ -460,7 +464,7 @@ async function updateTaskStatus(displayNumber, status, extra = {}) {
   }
 }
 
-async function claimTask(displayNumber) {
+async function claimTask(displayNumber, todoId) {
   const machineId = getMachineId();
   const machineName = getMachineName();
 
@@ -473,12 +477,18 @@ async function claimTask(displayNumber) {
   const branch = `push-${displayNumber}-${suffix}`;
 
   const payload = {
-    displayNumber,
+    todoId: todoId || undefined,     // UUID lookup (primary, avoids display_number collisions)
+    displayNumber,                   // Fallback + kept for logging
     status: 'running',
     machineId,
     machineName,
     branch,
-    atomic: true
+    atomic: true,
+    event: {
+      type: 'started',
+      timestamp: new Date().toISOString(),
+      machineName: machineName || undefined,
+    }
   };
 
   try {
@@ -1276,6 +1286,9 @@ async function executeTask(task) {
     return null;
   }
 
+  // Extract UUID early — needed for claim and all status updates
+  const taskId = task.id || task.todo_id || '';
+
   // Get project path (use action_type for multi-agent routing)
   let projectPath = null;
   if (gitRemote) {
@@ -1290,7 +1303,7 @@ async function executeTask(task) {
       logError(`Task #${displayNumber}: Project path does not exist: ${projectPath}`);
       await updateTaskStatus(displayNumber, 'failed', {
         error: `Project path not found: ${projectPath}`
-      });
+      }, taskId);
       return null;
     }
 
@@ -1298,13 +1311,10 @@ async function executeTask(task) {
   }
 
   // Atomic task claiming - must await to actually check the result
-  if (!(await claimTask(displayNumber))) {
+  if (!(await claimTask(displayNumber, taskId))) {
     log(`Task #${displayNumber}: claim failed, skipping`);
     return null;
   }
-
-  // Auto-heal: check if previous execution already completed work for this task
-  const taskId = task.id || task.todo_id || '';
   const healed = await autoHealExistingWork(displayNumber, summary, projectPath, taskId);
   if (healed) {
     log(`Task #${displayNumber}: auto-healed from previous execution, skipping re-execution`);
@@ -1313,7 +1323,7 @@ async function executeTask(task) {
 
   // Track task details
   updateTaskDetail(displayNumber, {
-    taskId: task.id || task.todo_id || '',
+    taskId,
     summary,
     status: 'running',
     phase: 'starting',
@@ -1327,7 +1337,7 @@ async function executeTask(task) {
   // Create worktree
   const worktreePath = createWorktree(displayNumber, projectPath);
   if (!worktreePath) {
-    await updateTaskStatus(displayNumber, 'failed', { error: 'Failed to create git worktree' });
+    await updateTaskStatus(displayNumber, 'failed', { error: 'Failed to create git worktree' }, taskId);
     taskDetails.delete(displayNumber);
     return null;
   }
@@ -1425,7 +1435,7 @@ IMPORTANT:
     child.on('error', async (error) => {
       logError(`Task #${displayNumber} error: ${error.message}`);
       runningTasks.delete(displayNumber);
-      await updateTaskStatus(displayNumber, 'failed', { error: error.message });
+      await updateTaskStatus(displayNumber, 'failed', { error: error.message }, taskId);
       taskDetails.delete(displayNumber);
       updateStatusFile();
     });
@@ -1441,7 +1451,7 @@ IMPORTANT:
     return taskInfo;
   } catch (error) {
     logError(`Error starting Claude for task #${displayNumber}: ${error.message}`);
-    await updateTaskStatus(displayNumber, 'failed', { error: error.message });
+    await updateTaskStatus(displayNumber, 'failed', { error: error.message }, taskId);
     taskDetails.delete(displayNumber);
     return null;
   }
@@ -1499,13 +1509,13 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       duration,
       sessionId,
       summary: executionSummary
-    });
+    }, info.taskId);
     if (!statusUpdated) {
       logError(`Task #${displayNumber}: Failed to update status to session_finished — will retry`);
       // Retry once
       await updateTaskStatus(displayNumber, 'session_finished', {
         duration, sessionId, summary: executionSummary
-      });
+      }, info.taskId);
     }
 
     if (NOTIFY_ON_COMPLETE) {
@@ -1581,7 +1591,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       ? `${failureSummary}\nExit code ${exitCode}. Ran for ${durationStr} on ${machineName}.`
       : `Exit code ${exitCode}: ${stderr.slice(0, 200)}`;
 
-    await updateTaskStatus(displayNumber, 'failed', { error: errorMsg });
+    await updateTaskStatus(displayNumber, 'failed', { error: errorMsg }, info.taskId);
 
     if (NOTIFY_ON_FAILURE) {
       sendMacNotification(
@@ -1879,6 +1889,7 @@ async function recoverOrphanedTasks() {
 
     for (const task of orphaned) {
       const dn = task.displayNumber || task.display_number;
+      const tid = task.id || task.todo_id || null;
       log(`Task #${dn}: resetting from 'running' to 'queued' (orphaned by restart)`);
       await updateTaskStatus(dn, 'queued', {
         event: {
@@ -1887,7 +1898,7 @@ async function recoverOrphanedTasks() {
           machineName: getMachineName() || undefined,
           summary: 'Daemon restarted — re-queuing for auto-heal'
         }
-      });
+      }, tid);
     }
   } catch (error) {
     log(`Orphaned task recovery failed (non-fatal): ${error.message}`);

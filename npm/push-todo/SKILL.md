@@ -348,6 +348,16 @@ If the session file cannot be found (daemon just started, no output yet):
 
 Tasks can have **screenshot images** and **reference links** attached. When working on a task, always check for and use these attachments — they provide critical visual and reference context.
 
+### Context App
+
+The task output may show a **Context App** field (e.g., `X`, `Safari`, `WeChat`, `Slack`). This tells you which app the user was in when they created the voice task. Use this as semantic context:
+- **Context App: X** + screenshot → the screenshot is likely a tweet or thread
+- **Context App: Safari** + link → the user was browsing a webpage
+- **Context App: Slack** → the task relates to a Slack conversation
+- If the field is absent or empty, the user created the task from the Push app directly
+
+This context helps interpret ambiguous voice transcripts like "fix this" or "do we need this?" — the context app + screenshot together reveal what "this" refers to.
+
 ### Screenshot Attachments
 
 Screenshots are images captured from the user's phone screen when creating the task. They're stored in **iCloud Documents** and synced to the Mac automatically.
@@ -381,7 +391,6 @@ Links are reference URLs the user shared when creating the task (e.g., from Safa
 
 1. Links are displayed as clickable markdown: `🔗 [Title](URL)`
 2. **Use WebFetch** to read the linked content when relevant to the task
-3. The `contextApp` field shows which app the link came from (e.g., "Safari", "WeChat")
 
 ### Programmatic Access (JSON mode)
 

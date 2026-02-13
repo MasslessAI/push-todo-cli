@@ -176,6 +176,12 @@ export function formatTaskForDisplay(task) {
     lines.push(`**Session:** Resumable (\`push-todo resume ${displayNum}\`) - continues the exact Claude Code conversation`);
   }
 
+  // Context app — which app the user was in when creating the task
+  const contextApp = task.contextApp || task.context_app;
+  if (contextApp) {
+    lines.push(`**Context App:** ${contextApp}`);
+  }
+
   const createdAt = task.createdAt || task.created_at;
   lines.push(`**Created:** ${createdAt || 'unknown'}`);
 
