@@ -105,6 +105,17 @@ const taskStderrBuffer = new Map(); // displayNumber -> lines[]
 const taskProjectPaths = new Map(); // displayNumber -> projectPath
 let daemonStartTime = null;
 
+// ==================== Utilities ====================
+
+function parseJsonField(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch { return []; }
+  }
+  return [];
+}
+
 // ==================== Logging ====================
 
 function rotateLogs() {
@@ -1386,10 +1397,37 @@ async function executeTask(task) {
 
   taskProjectPaths.set(displayNumber, projectPath);
 
+  // Build attachment context for the prompt (screenshots, links)
+  let attachmentContext = '';
+  try {
+    const links = parseJsonField(task.linkAttachmentsJson || task.linkAttachments || task.link_attachments);
+    const screenshots = parseJsonField(task.screenshotAttachmentsJson || task.screenshotAttachments || task.screenshot_attachments);
+    const contextApp = task.contextApp || task.context_app || null;
+
+    const parts = [];
+    if (contextApp) {
+      parts.push(`Context app: ${contextApp}`);
+    }
+    if (links.length > 0) {
+      parts.push('Links:\n' + links.map(l => `  - ${l.url}${l.title ? ` (${l.title})` : ''}`).join('\n'));
+    }
+    if (screenshots.length > 0) {
+      parts.push('Screenshots:\n' + screenshots.map(s =>
+        `  - ${s.imageFilename || s.image_filename}${s.sourceApp ? ` (from ${s.sourceApp})` : ''}`
+      ).join('\n'));
+    }
+
+    if (parts.length > 0) {
+      attachmentContext = '\n\nAttachments:\n' + parts.join('\n');
+    }
+  } catch {
+    // Non-critical — continue without attachment context
+  }
+
   // Build prompt
   const prompt = `Work on Push task #${displayNumber}:
 
-${content}
+${content}${attachmentContext}
 
 IMPORTANT:
 1. If you need to understand the codebase, start by reading the CLAUDE.md file if it exists.
@@ -1405,6 +1443,7 @@ IMPORTANT:
     'Bash(git *)',
     'Bash(npm *)', 'Bash(npx *)', 'Bash(yarn *)',
     'Bash(python *)', 'Bash(python3 *)', 'Bash(pip *)', 'Bash(pip3 *)',
+    'Bash(push-todo *)',
     'Task'
   ].join(',');
 
