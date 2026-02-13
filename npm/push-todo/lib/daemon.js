@@ -1377,11 +1377,11 @@ IMPORTANT:
     const child = spawn('claude', claudeArgs, {
       cwd: worktreePath,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PUSH_TASK_ID: task.id,
-        PUSH_DISPLAY_NUMBER: String(displayNumber)
-      }
+      env: (() => {
+        const env = { ...process.env, PUSH_TASK_ID: task.id, PUSH_DISPLAY_NUMBER: String(displayNumber) };
+        delete env.CLAUDECODE;  // Strip to avoid "nested session" guard in Claude Code
+        return env;
+      })()
     });
 
     const taskInfo = {
