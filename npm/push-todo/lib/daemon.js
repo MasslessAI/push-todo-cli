@@ -443,6 +443,52 @@ async function fetchQueuedTasks() {
   }
 }
 
+// ==================== Scheduled Reminder Bridge ====================
+
+async function fetchScheduledTodos() {
+  try {
+    const params = new URLSearchParams();
+    params.set('scheduled_before', new Date().toISOString());
+
+    const response = await apiRequest(`synced-todos?${params}`);
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    return data.todos || [];
+  } catch (error) {
+    logError(`Failed to fetch scheduled todos: ${error.message}`);
+    return [];
+  }
+}
+
+async function checkAndQueueScheduledTodos() {
+  const scheduledTodos = await fetchScheduledTodos();
+  if (scheduledTodos.length === 0) return;
+
+  for (const todo of scheduledTodos) {
+    const dn = todo.displayNumber;
+    const todoId = todo.id;
+
+    log(`Schedule triggered for #${dn} (reminder_date: ${todo.reminderDate})`);
+
+    try {
+      await updateTaskStatus(dn, 'queued', {
+        event: {
+          type: 'scheduled_trigger',
+          timestamp: new Date().toISOString(),
+          summary: 'Auto-queued: reminder time reached',
+        }
+      }, todoId);
+
+      log(`Queued #${dn} via schedule trigger`);
+    } catch (error) {
+      logError(`Failed to queue scheduled todo #${dn}: ${error.message}`);
+    }
+  }
+}
+
+// ==================== Task Status Updates ====================
+
 async function updateTaskStatus(displayNumber, status, extra = {}, todoId = null) {
   try {
     const payload = {
@@ -2125,6 +2171,14 @@ async function mainLoop() {
   const poll = async () => {
     try {
       await checkTimeouts();
+
+      // Schedule bridge: auto-queue todos whose reminder time has arrived
+      try {
+        await checkAndQueueScheduledTodos();
+      } catch (error) {
+        logError(`Scheduled todo check error: ${error.message}`);
+      }
+
       await pollAndExecute();
 
       // Cron jobs (check every poll cycle, execution throttled by nextRunAt)
