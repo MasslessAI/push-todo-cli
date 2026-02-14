@@ -101,6 +101,17 @@ ${bold('CONFIRM (for daemon skills):')}
   --metadata <json>                Optional JSON metadata for rich rendering
   --task <number>                  Display number (auto-detected in daemon)
 
+${bold('CRON (scheduled jobs):')}
+  push-todo cron add               Add a cron job
+    --name <name>                  Job name (required)
+    --every <interval>             Repeat interval: 30m, 1h, 24h, 7d
+    --at <iso-date>                One-shot at specific time
+    --cron <expression>            5-field cron expression
+    --notify <message>             Send Mac notification
+    --create-todo <content>        Create todo reminder
+  push-todo cron list              List all cron jobs
+  push-todo cron remove <id>       Remove a cron job by ID
+
 ${bold('SETTINGS:')}
   push-todo setting                Show all settings
   push-todo setting auto-commit    Toggle auto-commit
@@ -150,6 +161,14 @@ const options = {
   'content': { type: 'string' },
   'metadata': { type: 'string' },
   'task': { type: 'string' },
+  // Cron command options
+  'name': { type: 'string' },
+  'every': { type: 'string' },
+  'at': { type: 'string' },
+  'cron': { type: 'string' },
+  'create-todo': { type: 'string' },
+  'notify': { type: 'string' },
+  'queue-execution': { type: 'string' },
 };
 
 /**
@@ -484,6 +503,97 @@ export async function run(argv) {
   if (command === 'confirm') {
     const { requestConfirmation } = await import('./confirm.js');
     return requestConfirmation(values, positionals);
+  }
+
+  // Cron command - scheduled jobs
+  if (command === 'cron') {
+    const { addJob, removeJob, listJobs } = await import('./cron.js');
+    const subCommand = positionals[1];
+
+    if (subCommand === 'add') {
+      if (!values.name) {
+        console.error(red('--name is required for cron add'));
+        process.exit(1);
+      }
+
+      // Determine schedule
+      let schedule;
+      if (values.every) {
+        schedule = { type: 'every', value: values.every };
+      } else if (values.at) {
+        schedule = { type: 'at', value: values.at };
+      } else if (values.cron) {
+        schedule = { type: 'cron', value: values.cron };
+      } else {
+        console.error(red('Schedule required: --every, --at, or --cron'));
+        process.exit(1);
+      }
+
+      // Determine action
+      let action;
+      if (values['create-todo']) {
+        action = { type: 'create-todo', content: values['create-todo'] };
+      } else if (values.notify) {
+        action = { type: 'notify', content: values.notify };
+      } else if (values['queue-execution']) {
+        action = { type: 'queue-execution', todoId: values['queue-execution'] };
+      } else {
+        console.error(red('Action required: --create-todo, --notify, or --queue-execution'));
+        process.exit(1);
+      }
+
+      try {
+        const job = addJob({ name: values.name, schedule, action });
+        console.log(green(`Created cron job: ${job.name} (ID: ${job.id.slice(0, 8)})`));
+        console.log(dim(`Next run: ${job.nextRunAt}`));
+      } catch (error) {
+        console.error(red(`Failed to create cron job: ${error.message}`));
+        process.exit(1);
+      }
+      return;
+    }
+
+    if (subCommand === 'list') {
+      const jobs = listJobs();
+      if (jobs.length === 0) {
+        console.log('No cron jobs configured.');
+        console.log(dim('Add one with: push-todo cron add --name "..." --every "24h" --notify "..."'));
+        return;
+      }
+      console.log(bold('Cron Jobs:'));
+      for (const job of jobs) {
+        const status = job.enabled ? green('ON') : dim('OFF');
+        const schedStr = job.schedule.type === 'every' ? `every ${job.schedule.value}` :
+                         job.schedule.type === 'at' ? `at ${job.schedule.value}` :
+                         `cron: ${job.schedule.value}`;
+        console.log(`  ${status} ${job.name} [${schedStr}] → ${job.action.type}: ${job.action.content || job.action.todoId || ''}`);
+        console.log(dim(`     ID: ${job.id.slice(0, 8)} | Next: ${job.nextRunAt || 'N/A'} | Last: ${job.lastRunAt || 'never'}`));
+      }
+      return;
+    }
+
+    if (subCommand === 'remove') {
+      const jobId = positionals[2];
+      if (!jobId) {
+        console.error(red('Usage: push-todo cron remove <id>'));
+        process.exit(1);
+      }
+      if (removeJob(jobId)) {
+        console.log(green(`Removed cron job ${jobId}`));
+      } else {
+        console.error(red(`Cron job not found: ${jobId}`));
+        process.exit(1);
+      }
+      return;
+    }
+
+    // Default: show help for cron
+    console.log(`${bold('Cron Commands:')}
+  push-todo cron add     Add a new scheduled job
+  push-todo cron list    List all jobs
+  push-todo cron remove  Remove a job by ID
+    `);
+    return;
   }
 
   // Connect command

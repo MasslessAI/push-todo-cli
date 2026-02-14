@@ -20,6 +20,10 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 import { checkForUpdate, performUpdate } from './self-update.js';
+import { getProjectContext, buildSmartPrompt, invalidateCache } from './context-engine.js';
+import { sendMacNotification } from './utils/notify.js';
+import { checkAndRunDueJobs } from './cron.js';
+import { runHeartbeatChecks } from './heartbeat.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -191,26 +195,6 @@ function acquireLock() {
 
 function releaseLock() {
   try { unlinkSync(LOCK_FILE); } catch {}
-}
-
-// ==================== Mac Notifications ====================
-
-function sendMacNotification(title, message, sound = 'default') {
-  if (platform() !== 'darwin') return;
-
-  try {
-    const escapedTitle = title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const escapedMessage = message.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-
-    let script = `display notification "${escapedMessage}" with title "${escapedTitle}"`;
-    if (sound && sound !== 'default') {
-      script += ` sound name "${sound}"`;
-    }
-
-    execSync(`osascript -e '${script}'`, { timeout: 5000, stdio: 'pipe' });
-  } catch {
-    // Non-critical
-  }
 }
 
 // ==================== Config ====================
@@ -593,6 +577,42 @@ function getProjectPath(gitRemote, actionType) {
     for (const [key, info] of Object.entries(projects)) {
       if ((info.gitRemote || key) === gitRemote) {
         return info.localPath || info.local_path || null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get project info including path and action metadata.
+ * Like getProjectPath but also returns actionName for the prompt engine.
+ */
+function getProjectInfo(gitRemote, actionType) {
+  if (!existsSync(REGISTRY_FILE)) return null;
+  try {
+    const data = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'));
+    const projects = data.projects || {};
+
+    // Try exact composite key first (V2 format)
+    if (actionType) {
+      const key = `${gitRemote}::${actionType}`;
+      if (projects[key]) {
+        return {
+          path: projects[key].localPath || projects[key].local_path || null,
+          actionName: projects[key].actionName || null,
+        };
+      }
+    }
+
+    // Fallback scan
+    for (const [key, info] of Object.entries(projects)) {
+      if ((info.gitRemote || key) === gitRemote) {
+        return {
+          path: info.localPath || info.local_path || null,
+          actionName: info.actionName || null,
+        };
       }
     }
     return null;
@@ -1360,15 +1380,18 @@ async function executeTask(task) {
   // Extract UUID early — needed for claim and all status updates
   const taskId = task.id || task.todo_id || '';
 
-  // Get project path (use action_type for multi-agent routing)
+  // Get project path + metadata (use action_type for multi-agent routing)
   let projectPath = null;
+  let actionName = null;
   if (gitRemote) {
-    projectPath = getProjectPath(gitRemote, taskActionType);
-    if (!projectPath) {
+    const projectInfo = getProjectInfo(gitRemote, taskActionType);
+    if (!projectInfo || !projectInfo.path) {
       log(`Task #${displayNumber}: Project not registered: ${gitRemote}`);
       log("Run '/push-todo connect' in the project directory to register");
       return null;
     }
+    projectPath = projectInfo.path;
+    actionName = projectInfo.actionName;
 
     if (!existsSync(projectPath)) {
       logError(`Task #${displayNumber}: Project path does not exist: ${projectPath}`);
@@ -1442,15 +1465,14 @@ async function executeTask(task) {
     // Non-critical — continue without attachment context
   }
 
-  // Build prompt
-  const prompt = `Work on Push task #${displayNumber}:
-
-${content}${attachmentContext}
-
-IMPORTANT:
-1. If you need to understand the codebase, start by reading the CLAUDE.md file if it exists.
-2. ALWAYS commit your changes before finishing. Use a descriptive commit message summarizing what you did. This is critical — uncommitted changes will be lost when the worktree is cleaned up.
-3. When you're done, the SessionEnd hook will automatically report completion to Supabase.`;
+  // Build context-rich prompt (skill scanning, project state, confirmation flags)
+  if (projectPath) invalidateCache(projectPath); // Fresh context for each task
+  const projectContext = projectPath ? getProjectContext(projectPath) : { skills: [], state: {} };
+  const contextApp = task.contextApp || task.context_app || null;
+  const prompt = buildSmartPrompt(
+    { displayNumber, content, attachmentContext, actionName, contextApp },
+    projectContext
+  );
 
   // Note: claimTask() already set status to 'running' with atomic: true
   // No duplicate status update needed here (was causing race conditions)
@@ -2104,6 +2126,25 @@ async function mainLoop() {
     try {
       await checkTimeouts();
       await pollAndExecute();
+
+      // Cron jobs (check every poll cycle, execution throttled by nextRunAt)
+      try {
+        await checkAndRunDueJobs(log);
+      } catch (error) {
+        logError(`Cron check error: ${error.message}`);
+      }
+
+      // Heartbeat checks (internally throttled: 10min fast, 1hr slow)
+      try {
+        const projects = getListedProjects();
+        await runHeartbeatChecks({
+          projectPaths: Object.values(projects),
+          apiRequest,
+          log,
+        });
+      } catch (error) {
+        logError(`Heartbeat error: ${error.message}`);
+      }
 
       // Self-update check (throttled to once per hour, only applies when idle)
       if (getAutoUpdateEnabled()) {
