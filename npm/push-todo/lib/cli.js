@@ -43,6 +43,7 @@ ${bold('push-todo')} - Voice tasks from Push iOS app for Claude Code
 ${bold('USAGE:')}
   push-todo [options]              List active tasks
   push-todo <number>               Show specific task
+  push-todo create <title>         Create a new todo
   push-todo connect                Run connection doctor
   push-todo search <query>         Search tasks
   push-todo review                 Review completed tasks
@@ -78,6 +79,8 @@ ${bold('OPTIONS:')}
 ${bold('EXAMPLES:')}
   push-todo                        List active tasks for current project
   push-todo 427                    Show task #427
+  push-todo create "Fix auth bug"  Create a new todo
+  push-todo create "Item" --backlog Create as backlog item
   push-todo -a                     List all tasks across projects
   push-todo --queue 1,2,3          Queue tasks 1, 2, 3 for daemon
   push-todo search "auth bug"      Search for tasks matching "auth bug"
@@ -503,6 +506,38 @@ export async function run(argv) {
   if (command === 'confirm') {
     const { requestConfirmation } = await import('./confirm.js');
     return requestConfirmation(values, positionals);
+  }
+
+  // Create command - create a new todo
+  if (command === 'create') {
+    const title = positionals.slice(1).join(' ');
+    if (!title) {
+      console.error(red('Error: Title is required.'));
+      console.error('');
+      console.error('Usage:');
+      console.error('  push-todo create "Fix the auth bug"');
+      console.error('  push-todo create "Fix the auth bug" --backlog');
+      console.error('  push-todo create "Fix the auth bug" --content "Detailed description"');
+      process.exit(1);
+    }
+
+    try {
+      const todo = await api.createTodo({
+        title,
+        content: values.content || null,
+        backlog: values.backlog || false,
+      });
+
+      if (values.json) {
+        console.log(JSON.stringify(todo, null, 2));
+      } else {
+        console.log(green(`Created todo #${todo.displayNumber}: ${todo.title}`));
+      }
+    } catch (error) {
+      console.error(red(`Failed to create todo: ${error.message}`));
+      process.exit(1);
+    }
+    return;
   }
 
   // Cron command - scheduled jobs

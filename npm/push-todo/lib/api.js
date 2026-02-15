@@ -148,6 +148,39 @@ export async function markTaskCompleted(taskId, comment = '') {
 }
 
 /**
+ * Create a new todo.
+ *
+ * @param {Object} options - Todo creation options
+ * @param {string} options.title - Todo title (required)
+ * @param {string|null} options.content - Detailed content (optional)
+ * @param {boolean} options.backlog - Whether to create as backlog item
+ * @returns {Promise<Object>} Created todo with { id, displayNumber, title, createdAt }
+ */
+export async function createTodo({ title, content = null, backlog = false }) {
+  const response = await apiRequest('create-todo', {
+    method: 'POST',
+    body: JSON.stringify({
+      title,
+      normalizedContent: content || null,
+      isBacklog: backlog,
+      createdByClient: 'cli',
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to create todo: ${text}`);
+  }
+
+  const data = await response.json();
+  if (!data.success) {
+    throw new Error(data.error || 'Unknown error creating todo');
+  }
+
+  return data.todo;
+}
+
+/**
  * Queue a task for daemon execution.
  *
  * Sets execution_status to 'queued' via the update-task-execution endpoint.
