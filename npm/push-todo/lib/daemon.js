@@ -13,6 +13,7 @@
  * Ported from: plugins/push-todo/scripts/daemon.py
  */
 
+import { randomUUID } from 'crypto';
 import { spawn, execSync, execFileSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, unlinkSync, statSync, renameSync } from 'fs';
 import { homedir, hostname, platform } from 'os';
@@ -547,7 +548,7 @@ async function updateTaskStatus(displayNumber, status, extra = {}, todoId = null
   }
 }
 
-async function claimTask(displayNumber, todoId) {
+async function claimTask(displayNumber, todoId, sessionId) {
   const machineId = getMachineId();
   const machineName = getMachineName();
 
@@ -566,6 +567,7 @@ async function claimTask(displayNumber, todoId) {
     machineId,
     machineName,
     branch,
+    sessionId,                       // Pre-assigned session ID for reliable resume
     atomic: true,
     event: {
       type: 'started',
@@ -1450,8 +1452,11 @@ async function executeTask(task) {
     log(`Task #${displayNumber}: Project ${gitRemote} -> ${projectPath}`);
   }
 
+  // Pre-assign session ID so we can store it at claim time (not rely on parsing stdout)
+  const preAssignedSessionId = randomUUID();
+
   // Atomic task claiming - must await to actually check the result
-  if (!(await claimTask(displayNumber, taskId))) {
+  if (!(await claimTask(displayNumber, taskId, preAssignedSessionId))) {
     log(`Task #${displayNumber}: claim failed, skipping`);
     return null;
   }
@@ -1537,7 +1542,8 @@ async function executeTask(task) {
     '-p', prompt,
     '--allowedTools', allowedTools,
     '--output-format', 'json',
-    '--permission-mode', 'bypassPermissions'
+    '--permission-mode', 'bypassPermissions',
+    '--session-id', preAssignedSessionId
   ];
 
   try {
@@ -1557,7 +1563,8 @@ async function executeTask(task) {
       task,
       displayNumber,
       startTime: Date.now(),
-      projectPath
+      projectPath,
+      sessionId: preAssignedSessionId
     };
 
     runningTasks.set(displayNumber, taskInfo);
@@ -1652,17 +1659,16 @@ async function handleTaskCompletion(displayNumber, exitCode) {
 
   log(`Task #${displayNumber} completed with code ${exitCode} (${duration}s)`);
 
-  // Extract session ID for both success and failure (needed for AI summary)
-  const buffer = taskStdoutBuffer.get(displayNumber) || [];
-  const sessionId = extractSessionIdFromStdout(taskInfo.process, buffer);
+  // Session ID: prefer pre-assigned ID (reliable), fall back to stdout extraction
+  const sessionId = taskInfo.sessionId || extractSessionIdFromStdout(taskInfo.process, taskStdoutBuffer.get(displayNumber) || []);
   const worktreePath = getWorktreePath(displayNumber, projectPath);
   const durationStr = duration < 60 ? `${duration}s` : `${Math.floor(duration / 60)}m ${duration % 60}s`;
   const machineName = getMachineName() || 'Mac';
 
   if (sessionId) {
-    log(`Task #${displayNumber} session_id: ${sessionId}`);
+    log(`Task #${displayNumber} session_id: ${sessionId}${taskInfo.sessionId ? ' (pre-assigned)' : ' (from stdout)'}`);
   } else {
-    log(`Task #${displayNumber} could not extract session_id`);
+    log(`Task #${displayNumber} could not determine session_id`);
   }
 
   if (exitCode === 0) {
@@ -1798,7 +1804,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       ? `${failureSummary}\nExit code ${exitCode}. Ran for ${durationStr} on ${machineName}.`
       : `Exit code ${exitCode}: ${stderr.slice(0, 200)}`;
 
-    await updateTaskStatus(displayNumber, 'failed', { error: errorMsg }, info.taskId);
+    await updateTaskStatus(displayNumber, 'failed', { error: errorMsg, sessionId }, info.taskId);
 
     if (NOTIFY_ON_FAILURE) {
       sendMacNotification(
@@ -1942,7 +1948,7 @@ async function checkTimeouts() {
     runningTasks.delete(displayNumber);
 
     const timeoutError = `Task timed out after ${duration}s (limit: ${TASK_TIMEOUT_MS / 1000}s)`;
-    updateTaskStatus(displayNumber, 'failed', { error: timeoutError });
+    updateTaskStatus(displayNumber, 'failed', { error: timeoutError, sessionId: taskInfo.sessionId });
 
     if (NOTIFY_ON_FAILURE) {
       sendMacNotification(
