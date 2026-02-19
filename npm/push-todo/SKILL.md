@@ -47,11 +47,24 @@ When this command is invoked:
      - The task is queued and waiting for the daemon to pick it up
      - Tell the user: "This task is queued and will be picked up by the daemon shortly."
      - Do NOT start working on this task
+   - For both running and queued tasks, remind the user they can monitor or resume later:
+     ```
+     To resume the daemon's session later, open a new terminal and run:
+
+         push-todo --resume <number>
+     ```
 
 8. **Check for resumable daemon sessions:**
    - If the task output contains `**Session:** Resumable`, the daemon already ran Claude Code on this task
-   - Do NOT start working from scratch — automatically load the daemon's session context
-   - Follow the [Auto-Resume from Session Transcript](#auto-resume-from-session-transcript) procedure below
+   - **Tell the user they can resume the daemon's exact Claude session** in a separate terminal:
+     ```
+     To resume the daemon's Claude session, open a new terminal and run:
+
+         push-todo --resume <number>
+
+     This cannot run inside Claude Code (sessions can't nest).
+     ```
+   - Then follow the [Auto-Resume from Session Transcript](#auto-resume-from-session-transcript) procedure to load the daemon's work context into THIS session
    - Only if the session transcript cannot be found should you begin working from scratch
 
 9. **Load task attachments** before starting work:
