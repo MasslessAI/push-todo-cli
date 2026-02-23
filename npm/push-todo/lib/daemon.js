@@ -448,10 +448,23 @@ async function fetchQueuedTasks() {
 
 async function fetchScheduledTodos() {
   try {
+    const machineId = getMachineId();
     const params = new URLSearchParams();
     params.set('scheduled_before', new Date().toISOString());
+    if (machineId) {
+      params.set('machine_id', machineId);
+    }
 
-    const response = await apiRequest(`synced-todos?${params}`);
+    // Include registered git_remotes so backend can scope to this machine's projects
+    const projects = getListedProjects();
+    const gitRemotes = Object.keys(projects);
+    const headers = {};
+    if (machineId && gitRemotes.length > 0) {
+      headers['X-Machine-Id'] = machineId;
+      headers['X-Git-Remotes'] = gitRemotes.join(',');
+    }
+
+    const response = await apiRequest(`synced-todos?${params}`, { headers });
     if (!response.ok) return [];
 
     const data = await response.json();
@@ -466,11 +479,33 @@ async function checkAndQueueScheduledTodos() {
   const scheduledTodos = await fetchScheduledTodos();
   if (scheduledTodos.length === 0) return;
 
+  const registeredProjects = getListedProjects();
+
   for (const todo of scheduledTodos) {
-    const dn = todo.displayNumber;
+    const dn = todo.displayNumber || todo.display_number;
     const todoId = todo.id;
 
-    log(`Schedule triggered for #${dn} (reminder_date: ${todo.reminderDate})`);
+    // Skip tasks already in an execution state (running, queued, completed, failed, etc.)
+    const execStatus = todo.executionStatus || todo.execution_status;
+    if (execStatus && execStatus !== 'none') {
+      continue;
+    }
+
+    // Skip completed tasks
+    if (todo.isCompleted || todo.is_completed) {
+      continue;
+    }
+
+    // Skip tasks whose project is not registered on this machine
+    const gitRemote = todo.gitRemote || todo.git_remote;
+    if (gitRemote && Object.keys(registeredProjects).length > 0) {
+      if (!(gitRemote in registeredProjects)) {
+        log(`Schedule skipped #${dn}: project ${gitRemote} not registered on this machine`);
+        continue;
+      }
+    }
+
+    log(`Schedule triggered for #${dn} (reminder_date: ${todo.reminderDate || todo.reminder_date})`);
 
     try {
       await updateTaskStatus(dn, 'queued', {
