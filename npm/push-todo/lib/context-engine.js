@@ -234,7 +234,16 @@ export function buildSmartPrompt(task, context) {
   const sections = [];
 
   // 1. Task section (always present)
-  sections.push(`## Task\nWork on Push task #${task.displayNumber}:\n\n${task.content}`);
+  // For follow-ups, frame as iteration on previous work
+  if (task.followUpRequest) {
+    sections.push(`## Task (Follow-Up Iteration #${task.followUpIteration || 2})\nContinue working on Push task #${task.displayNumber}.\n\nOriginal task:\n${task.content}\n\n**Follow-up request:**\n${task.followUpRequest}`);
+    // Include previous execution summary as context
+    if (task.previousSummary) {
+      sections.push(`## Previous Iteration Summary\nHere's what was accomplished in the previous iteration:\n\n${task.previousSummary}`);
+    }
+  } else {
+    sections.push(`## Task\nWork on Push task #${task.displayNumber}:\n\n${task.content}`);
+  }
 
   // 2. Metadata section (conditional)
   const metaParts = [];

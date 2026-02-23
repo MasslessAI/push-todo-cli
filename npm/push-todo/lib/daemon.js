@@ -1521,10 +1521,21 @@ async function executeTask(task) {
     log(`Task #${displayNumber}: claim failed, skipping`);
     return null;
   }
-  const healed = await autoHealExistingWork(displayNumber, summary, projectPath, taskId);
-  if (healed) {
-    log(`Task #${displayNumber}: auto-healed from previous execution, skipping re-execution`);
-    return null;
+  // Follow-up: skip auto-heal when follow_up_request is set — the existing
+  // branch/PR is intentional context, not evidence of completion.
+  const followUpRequest = task.followUpRequest || task.follow_up_request || null;
+  const followUpIteration = task.followUpIteration || task.follow_up_iteration || 1;
+  const previousSessionId = task.executionSessionId || task.execution_session_id || null;
+  const previousSummary = task.executionSummary || task.execution_summary || null;
+
+  if (!followUpRequest) {
+    const healed = await autoHealExistingWork(displayNumber, summary, projectPath, taskId);
+    if (healed) {
+      log(`Task #${displayNumber}: auto-healed from previous execution, skipping re-execution`);
+      return null;
+    }
+  } else {
+    log(`Task #${displayNumber}: follow-up iteration #${followUpIteration}, skipping auto-heal`);
   }
 
   // Track task details
@@ -1578,7 +1589,8 @@ async function executeTask(task) {
   const projectContext = projectPath ? getProjectContext(projectPath) : { skills: [], state: {} };
   const contextApp = task.contextApp || task.context_app || null;
   const prompt = buildSmartPrompt(
-    { displayNumber, content, attachmentContext, actionName, contextApp },
+    { displayNumber, content, attachmentContext, actionName, contextApp,
+      followUpRequest, followUpIteration, previousSummary },
     projectContext
   );
 
@@ -1595,14 +1607,31 @@ async function executeTask(task) {
     'Task'
   ].join(',');
 
-  const claudeArgs = [
-    '-p', prompt,
-    '--worktree', worktreeName,
-    '--allowedTools', allowedTools,
-    '--output-format', 'json',
-    '--permission-mode', 'bypassPermissions',
-    '--session-id', preAssignedSessionId
-  ];
+  // For follow-ups: try --continue with previous session for full context.
+  // Falls back to new session with prompt context if session is stale/unavailable.
+  const useResume = followUpRequest && previousSessionId;
+  const claudeArgs = useResume
+    ? [
+        '--continue', previousSessionId,
+        '-p', prompt,
+        '--worktree', worktreeName,
+        '--allowedTools', allowedTools,
+        '--output-format', 'json',
+        '--permission-mode', 'bypassPermissions',
+        '--session-id', preAssignedSessionId
+      ]
+    : [
+        '-p', prompt,
+        '--worktree', worktreeName,
+        '--allowedTools', allowedTools,
+        '--output-format', 'json',
+        '--permission-mode', 'bypassPermissions',
+        '--session-id', preAssignedSessionId
+      ];
+
+  if (useResume) {
+    log(`Task #${displayNumber}: resuming session ${previousSessionId} for follow-up`);
+  }
 
   try {
     const child = spawn('claude', claudeArgs, {
