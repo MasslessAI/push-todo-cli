@@ -592,8 +592,7 @@ async function claimTask(displayNumber, todoId, sessionId) {
     return true;
   }
 
-  const suffix = getWorktreeSuffix();
-  const branch = `push-${displayNumber}-${suffix}`;
+  const branch = getBranchName(displayNumber);
 
   const payload = {
     todoId: todoId || undefined,     // UUID lookup (primary, avoids display_number collisions)
@@ -766,53 +765,24 @@ function getWorktreeSuffix() {
   return 'local';
 }
 
+// Worktree name passed to Claude Code's --worktree flag
+function getWorktreeName(displayNumber) {
+  const suffix = getWorktreeSuffix();
+  return `push-${displayNumber}-${suffix}`;
+}
+
+// Branch name created by Claude Code's --worktree (adds "worktree-" prefix)
+function getBranchName(displayNumber) {
+  return `worktree-${getWorktreeName(displayNumber)}`;
+}
+
 function getWorktreePath(displayNumber, projectPath) {
-  const suffix = getWorktreeSuffix();
-  const worktreeName = `push-${displayNumber}-${suffix}`;
-
-  if (projectPath) {
-    return join(dirname(projectPath), worktreeName);
-  }
-  return join(process.cwd(), '..', worktreeName);
+  const wtName = getWorktreeName(displayNumber);
+  const basePath = projectPath || process.cwd();
+  return join(basePath, '.claude', 'worktrees', wtName);
 }
 
-function createWorktree(displayNumber, projectPath) {
-  const suffix = getWorktreeSuffix();
-  const branch = `push-${displayNumber}-${suffix}`;
-  const worktreePath = getWorktreePath(displayNumber, projectPath);
-
-  if (existsSync(worktreePath)) {
-    log(`Worktree already exists: ${worktreePath}`);
-    return worktreePath;
-  }
-
-  const gitCwd = projectPath || process.cwd();
-
-  try {
-    // Try to create with new branch
-    execSync(`git worktree add "${worktreePath}" -b ${branch}`, {
-      cwd: gitCwd,
-      timeout: 30000,
-      stdio: 'pipe'
-    });
-    log(`Created worktree: ${worktreePath}`);
-    return worktreePath;
-  } catch {
-    // Branch might already exist, try without -b
-    try {
-      execSync(`git worktree add "${worktreePath}" ${branch}`, {
-        cwd: gitCwd,
-        timeout: 30000,
-        stdio: 'pipe'
-      });
-      log(`Created worktree (existing branch): ${worktreePath}`);
-      return worktreePath;
-    } catch (e) {
-      logError(`Failed to create worktree: ${e.message}`);
-      return null;
-    }
-  }
-}
+// createWorktree() removed — Claude Code's --worktree flag handles creation
 
 function cleanupWorktree(displayNumber, projectPath) {
   const worktreePath = getWorktreePath(displayNumber, projectPath);
@@ -820,8 +790,7 @@ function cleanupWorktree(displayNumber, projectPath) {
   if (!existsSync(worktreePath)) return;
 
   const gitCwd = projectPath || process.cwd();
-  const suffix = getWorktreeSuffix();
-  const branch = `push-${displayNumber}-${suffix}`;
+  const branch = getBranchName(displayNumber);
 
   try {
     execSync(`git worktree remove "${worktreePath}" --force`, {
@@ -839,8 +808,7 @@ function cleanupWorktree(displayNumber, projectPath) {
 // ==================== PR Auto-Creation ====================
 
 function createPRForTask(displayNumber, summary, projectPath) {
-  const suffix = getWorktreeSuffix();
-  const branch = `push-${displayNumber}-${suffix}`;
+  const branch = getBranchName(displayNumber);
   const gitCwd = projectPath || process.cwd();
 
   try {
@@ -924,8 +892,7 @@ function mergePRForTask(displayNumber, prUrl, projectPath) {
   if (firstResult !== 'conflict') return false;  // non-conflict failure
 
   // Conflict detected — try to resolve with Claude
-  const suffix = getWorktreeSuffix();
-  const branch = `push-${displayNumber}-${suffix}`;
+  const branch = getBranchName(displayNumber);
   const resolved = resolveConflictsWithClaude(displayNumber, branch, gitCwd);
   if (!resolved) return false;
 
@@ -1138,13 +1105,14 @@ async function hasApprovedConfirmation(displayNumber) {
  * Returns true if the task was healed (status updated, no re-execution needed).
  */
 async function autoHealExistingWork(displayNumber, summary, projectPath, taskId) {
-  const suffix = getWorktreeSuffix();
-  const branch = `push-${displayNumber}-${suffix}`;
+  const branch = getBranchName(displayNumber);
+  const legacyBranch = `push-${displayNumber}-${getWorktreeSuffix()}`;
   const gitCwd = projectPath || process.cwd();
 
   try {
-    // Check if branch has commits ahead of main
+    // Check if branch has commits ahead of main (try new name, then legacy)
     let hasCommits = false;
+    let activeBranch = branch;
     try {
       const logResult = execSync(
         `git log HEAD..origin/${branch} --oneline 2>/dev/null || git log HEAD..${branch} --oneline 2>/dev/null`,
@@ -1152,22 +1120,35 @@ async function autoHealExistingWork(displayNumber, summary, projectPath, taskId)
       ).toString().trim();
       hasCommits = logResult.length > 0;
     } catch {
-      // Branch doesn't exist — no previous work
-      return false;
+      // New branch doesn't exist — try legacy branch from pre-migration daemon
+      try {
+        const legacyResult = execSync(
+          `git log HEAD..origin/${legacyBranch} --oneline 2>/dev/null || git log HEAD..${legacyBranch} --oneline 2>/dev/null`,
+          { cwd: gitCwd, timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] }
+        ).toString().trim();
+        if (legacyResult.length > 0) {
+          hasCommits = true;
+          activeBranch = legacyBranch;
+          log(`Task #${displayNumber}: found work on legacy branch ${legacyBranch}`);
+        }
+      } catch {
+        // Neither branch exists — no previous work
+        return false;
+      }
     }
 
     if (!hasCommits) {
       return false;
     }
 
-    log(`Task #${displayNumber}: found existing commits on branch ${branch}`);
+    log(`Task #${displayNumber}: found existing commits on branch ${activeBranch}`);
 
     // Check for existing PR
     let prUrl = null;
     let prState = null;
     try {
       const prResult = execSync(
-        `gh pr list --head ${branch} --state all --json url,state --jq '.[0]' 2>/dev/null`,
+        `gh pr list --head ${activeBranch} --state all --json url,state --jq '.[0]' 2>/dev/null`,
         { cwd: gitCwd, timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] }
       ).toString().trim();
       if (prResult) {
@@ -1426,6 +1407,51 @@ function extractSemanticSummary(worktreePath, sessionId) {
   }
 }
 
+/**
+ * Ask Claude to generate a Mermaid diagram of the key change it made.
+ * Uses the same session-resume pattern as extractSemanticSummary.
+ *
+ * @param {string} worktreePath - Path to the git worktree where Claude ran
+ * @param {string} sessionId - Claude session ID
+ * @returns {string|null} Mermaid diagram source code, or null if extraction fails
+ */
+function extractVisualArtifact(worktreePath, sessionId) {
+  if (!worktreePath || !sessionId) return null;
+
+  try {
+    const result = execFileSync('claude', [
+      '--resume', sessionId,
+      '--print',
+      'Generate a Mermaid diagram showing the key architectural change or flow you implemented. ' +
+      'Use graph LR for component relationships, sequenceDiagram for API/data flow, ' +
+      'or gitGraph for branch operations. Keep it simple (5-10 nodes max). ' +
+      'Output ONLY the raw Mermaid code. No markdown fences, no explanation, no comments.'
+    ], {
+      cwd: worktreePath,
+      timeout: 30000,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    const mermaid = result.toString().trim();
+    if (!mermaid || mermaid.length === 0) return null;
+
+    // Validate: must start with a known Mermaid diagram keyword
+    const validStarts = ['graph ', 'graph\n', 'flowchart ', 'flowchart\n',
+      'sequenceDiagram', 'gitGraph', 'classDiagram', 'stateDiagram',
+      'erDiagram', 'gantt', 'pie'];
+    if (!validStarts.some(s => mermaid.startsWith(s))) {
+      log(`Visual artifact extraction returned non-Mermaid content, skipping`);
+      return null;
+    }
+
+    // Cap at 2000 chars — diagrams beyond this are too complex to be useful
+    return mermaid.length > 2000 ? mermaid.slice(0, 2000) : mermaid;
+  } catch (error) {
+    log(`Visual artifact extraction failed: ${error.message}`);
+    return null;
+  }
+}
+
 // ==================== Task Execution ====================
 
 function updateTaskDetail(displayNumber, updates) {
@@ -1514,13 +1540,9 @@ async function executeTask(task) {
 
   log(`Executing task #${displayNumber}: ${content.slice(0, 60)}...`);
 
-  // Create worktree
-  const worktreePath = createWorktree(displayNumber, projectPath);
-  if (!worktreePath) {
-    await updateTaskStatus(displayNumber, 'failed', { error: 'Failed to create git worktree' }, taskId);
-    taskDetails.delete(displayNumber);
-    return null;
-  }
+  // Worktree path — Claude Code's --worktree flag handles creation
+  const worktreeName = getWorktreeName(displayNumber);
+  const worktreePath = getWorktreePath(displayNumber, projectPath);
 
   taskProjectPaths.set(displayNumber, projectPath);
 
@@ -1575,6 +1597,7 @@ async function executeTask(task) {
 
   const claudeArgs = [
     '-p', prompt,
+    '--worktree', worktreeName,
     '--allowedTools', allowedTools,
     '--output-format', 'json',
     '--permission-mode', 'bypassPermissions',
@@ -1583,7 +1606,7 @@ async function executeTask(task) {
 
   try {
     const child = spawn('claude', claudeArgs, {
-      cwd: worktreePath,
+      cwd: projectPath || process.cwd(),
       stdio: ['ignore', 'pipe', 'pipe'],
       env: (() => {
         const env = { ...process.env, PUSH_TASK_ID: task.id, PUSH_DISPLAY_NUMBER: String(displayNumber) };
@@ -1710,8 +1733,11 @@ async function handleTaskCompletion(displayNumber, exitCode) {
     // Auto-create PR first so we can include it in the summary
     const prUrl = createPRForTask(displayNumber, summary, projectPath);
 
-    // Ask Claude to summarize what it accomplished (needs worktree path)
-    const semanticSummary = extractSemanticSummary(worktreePath, sessionId);
+    // Ask Claude to summarize what it accomplished.
+    // If --worktree auto-removed (no code changes), fall back to project path.
+    const summaryPath = existsSync(worktreePath) ? worktreePath : (projectPath || process.cwd());
+    const semanticSummary = extractSemanticSummary(summaryPath, sessionId);
+    const visualArtifact = extractVisualArtifact(summaryPath, sessionId);
 
     // Clean up worktree BEFORE merge — gh pr merge --delete-branch fails if
     // the local branch is still referenced by a worktree. The branch itself
@@ -1741,6 +1767,22 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       }, info.taskId);
     }
 
+    // Append visual artifact as a separate timeline event (non-blocking)
+    if (visualArtifact) {
+      log(`Task #${displayNumber}: Sending visual artifact (${visualArtifact.length} chars)`);
+      await updateTaskStatus(displayNumber, 'session_finished', {
+        event: {
+          type: 'visual_artifact',
+          timestamp: new Date().toISOString(),
+          machineName: machineName || undefined,
+          format: 'mermaid',
+          content: visualArtifact
+        }
+      }, info.taskId).catch(err => {
+        log(`Task #${displayNumber}: Visual artifact upload failed (non-fatal): ${err.message}`);
+      });
+    }
+
     if (NOTIFY_ON_COMPLETE) {
       const prNote = prUrl ? ' PR ready for review.' : '';
       sendMacNotification(
@@ -1760,8 +1802,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
     // check if a previous PR for this branch was already merged.
     // See: docs/20260211_auto_complete_failure_investigation.md (Fix D)
     if (!prUrl && !merged) {
-      const suffix = getWorktreeSuffix();
-      const branch = `push-${displayNumber}-${suffix}`;
+      const branch = getBranchName(displayNumber);
       try {
         const prCheck = execFileSync('gh', [
           'pr', 'list', '--head', branch, '--state', 'merged',
@@ -1829,8 +1870,10 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       log(`Task #${displayNumber} stderr: ${stderr.slice(0, 500)}`);
     }
 
-    // Ask Claude to explain what went wrong (needs worktree path)
-    const failureSummary = extractSemanticSummary(worktreePath, sessionId);
+    // Ask Claude to explain what went wrong.
+    // If --worktree auto-removed, fall back to project path.
+    const failSummaryPath = existsSync(worktreePath) ? worktreePath : (projectPath || process.cwd());
+    const failureSummary = extractSemanticSummary(failSummaryPath, sessionId);
 
     // Clean up worktree after summary extraction
     cleanupWorktree(displayNumber, projectPath);
