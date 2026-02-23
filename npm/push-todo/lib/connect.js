@@ -950,7 +950,7 @@ async function registerProjectWithBackend(apiKey, clientType = 'claude-code', ke
 
 // Mapping from CLI client_type to canonical DB action_type
 // Must match CLIENT_TO_ACTION_TYPE in register-project edge function
-const CLIENT_TO_ACTION_TYPE = {
+export const CLIENT_TO_ACTION_TYPE = {
   'claude-code': 'claude-code',
   'openai-codex': 'openai-codex',
   'openclaw': 'openclaw',
@@ -1378,6 +1378,65 @@ export async function runConnect(options = {}) {
   console.log('');
 }
 
+/**
+ * Register a project with the backend using explicit path and remote.
+ * Used by auto-connect for registering discovered projects at arbitrary paths.
+ *
+ * @param {string} apiKey - Push API key
+ * @param {string} clientType - Agent type (claude-code, openai-codex, openclaw)
+ * @param {string} projectPath - Absolute path to the project
+ * @param {string} gitRemote - Raw git remote URL
+ * @param {string|null} projectContext - First 50 lines of CLAUDE.md/README.md for keyword generation
+ * @returns {Promise<Object>} Registration result with status, action_id, action_type, etc.
+ */
+async function registerProjectWithBackendExplicit(apiKey, clientType, projectPath, gitRemote, projectContext = null) {
+  const clientName = CLIENT_NAMES[clientType] || 'Claude Code';
+
+  const payload = {
+    client_type: clientType,
+    client_name: clientName,
+    device_name: getDeviceName(),
+    project_path: projectPath,
+    git_remote: gitRemote,
+  };
+
+  if (projectContext) {
+    payload.project_context = projectContext;
+  }
+
+  const response = await fetch(`${API_BASE}/register-project`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': ANON_KEY,
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      return { status: 'unauthorized', message: 'API key invalid or revoked' };
+    }
+    const body = await response.json().catch(() => ({}));
+    return { status: 'error', message: body.error_description || `HTTP ${response.status}` };
+  }
+
+  const data = await response.json();
+  if (data.success) {
+    return {
+      status: 'success',
+      action_id: data.action_id || null,
+      action_type: data.action_type || null,
+      action_name: data.normalized_name || data.action_name || 'Unknown',
+      created: data.created !== false,
+      message: data.message || ''
+    };
+  }
+
+  return { status: 'error', message: 'Unknown error' };
+}
+
 export {
   checkVersion,
   doUpdate,
@@ -1388,5 +1447,9 @@ export {
   storeE2EEKeyDirect,
   showStatus,
   getInstallationMethod,
+  registerProjectWithBackendExplicit,
+  registerProjectLocally,
+  doFullDeviceAuth,
+  CLIENT_NAMES,
   VERSION
 };

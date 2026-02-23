@@ -95,6 +95,7 @@ ${bold('CONNECT OPTIONS:')}
   --validate-project               Validate project registration (JSON output)
   --store-e2ee-key <key>           Import E2EE encryption key
   --description <text>             Project description (with connect)
+  --auto                           Auto-discover and register all projects
 
 ${bold('CONFIRM (for daemon skills):')}
   push-todo confirm --type "social_post" --title "Post tweet" --content "..."
@@ -158,6 +159,7 @@ const options = {
   'validate-project': { type: 'boolean' },
   'store-e2ee-key': { type: 'string' },
   'description': { type: 'string' },
+  'auto': { type: 'boolean' },
   // Confirm command options
   'type': { type: 'string' },
   'title': { type: 'string' },
@@ -351,21 +353,34 @@ export async function run(argv) {
       const suffix = parts.length > 1 ? parts[parts.length - 1].slice(0, 8) : machineId.slice(0, 8);
       const worktreeName = `push-${displayNumber}-${suffix}`;
 
-      // Try to find the worktree relative to CWD's parent (sibling directory)
-      const candidate = join(dirname(process.cwd()), worktreeName);
-      if (existsSync(candidate)) {
-        resumeCwd = candidate;
-        console.log(`Found daemon worktree: ${candidate}`);
+      // Check new location first (inside project at .claude/worktrees/)
+      const newCandidate = join(process.cwd(), '.claude', 'worktrees', worktreeName);
+      // Check legacy location (sibling directory, pre-migration daemon)
+      const legacyCandidate = join(dirname(process.cwd()), worktreeName);
+
+      if (existsSync(newCandidate)) {
+        resumeCwd = newCandidate;
+        console.log(`Found daemon worktree: ${newCandidate}`);
+      } else if (existsSync(legacyCandidate)) {
+        resumeCwd = legacyCandidate;
+        console.log(`Found daemon worktree (legacy): ${legacyCandidate}`);
       } else {
         // Worktree was cleaned up after daemon finished, but the session file
         // still exists at ~/.claude/projects/. Re-create the directory so Claude
         // maps CWD to the correct session directory and finds the session.
         try {
-          mkdirSync(candidate, { recursive: true });
-          resumeCwd = candidate;
-          console.log(`Re-created worktree directory for session lookup: ${candidate}`);
+          mkdirSync(newCandidate, { recursive: true });
+          resumeCwd = newCandidate;
+          console.log(`Re-created worktree directory for session lookup: ${newCandidate}`);
         } catch {
-          console.log(dim(`Could not create worktree dir at ${candidate}, using current directory`));
+          // Fall back to legacy location
+          try {
+            mkdirSync(legacyCandidate, { recursive: true });
+            resumeCwd = legacyCandidate;
+            console.log(`Re-created worktree directory for session lookup: ${legacyCandidate}`);
+          } catch {
+            console.log(dim(`Could not create worktree dir, using current directory`));
+          }
         }
       }
     } catch {
@@ -633,6 +648,10 @@ export async function run(argv) {
 
   // Connect command
   if (command === 'connect') {
+    if (values.auto) {
+      const { runAutoConnect } = await import('./auto-connect.js');
+      return runAutoConnect(values);
+    }
     return runConnect(values);
   }
 

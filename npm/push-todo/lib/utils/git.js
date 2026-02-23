@@ -4,7 +4,7 @@
  * Provides helpers for git operations like getting remote URLs.
  */
 
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 /**
  * Get the normalized git remote URL for the current directory.
@@ -145,6 +145,31 @@ export function hasUncommittedChanges() {
     return result.trim().length > 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Get the normalized git remote URL for a specific directory path.
+ *
+ * Uses execFileSync (no shell) for safe execution with untrusted paths.
+ *
+ * @param {string} projectPath - Absolute path to the project directory
+ * @returns {string|null} Normalized git remote or null if not a git repo / no remote
+ */
+export function getGitRemoteForPath(projectPath) {
+  try {
+    const result = execFileSync('git', ['-C', projectPath, 'remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    const url = result.trim();
+    if (!url) return null;
+
+    return normalizeGitRemote(url);
+  } catch {
+    return null;
   }
 }
 
