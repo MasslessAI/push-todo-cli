@@ -25,7 +25,7 @@ import { getProjectContext, buildSmartPrompt, invalidateCache } from './context-
 import { sendMacNotification } from './utils/notify.js';
 import { checkAndRunDueJobs } from './cron.js';
 import { runHeartbeatChecks } from './heartbeat.js';
-import { getAgentVersions, formatAgentVersionSummary } from './agent-versions.js';
+import { getAgentVersions, formatAgentVersionSummary, checkAllAgentUpdates, performAgentUpdate, checkVersionParity } from './agent-versions.js';
 import { checkAllProjectsFreshness } from './project-freshness.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -279,6 +279,11 @@ function getAutoCompleteEnabled() {
 
 function getAutoUpdateEnabled() {
   const v = getConfigValueFromFile('AUTO_UPDATE', 'true');
+  return v.toLowerCase() === 'true' || v === '1' || v.toLowerCase() === 'yes';
+}
+
+function getAutoUpdateAgentsEnabled() {
+  const v = getConfigValueFromFile('AUTO_UPDATE_AGENTS', 'false');
   return v.toLowerCase() === 'true' || v === '1' || v.toLowerCase() === 'yes';
 }
 
@@ -2355,6 +2360,55 @@ function checkAndApplyUpdate() {
   }
 }
 
+// ==================== Agent Auto-Update ====================
+
+let pendingAgentUpdates = null; // { agentType: targetVersion, ... }
+
+function checkAndApplyAgentUpdates() {
+  // Check for updates (throttled internally to once per hour)
+  if (!pendingAgentUpdates) {
+    const results = checkAllAgentUpdates();
+    if (!results) return; // throttled
+
+    const available = {};
+    for (const [agentType, info] of Object.entries(results)) {
+      if (info.available) {
+        available[agentType] = info.latest;
+        log(`Agent update available: ${agentType} v${info.current} -> v${info.latest}`);
+      }
+    }
+    if (Object.keys(available).length > 0) {
+      pendingAgentUpdates = available;
+    }
+  }
+
+  // Only apply when no tasks are running
+  if (pendingAgentUpdates && runningTasks.size === 0) {
+    for (const [agentType, targetVersion] of Object.entries(pendingAgentUpdates)) {
+      log(`Updating ${agentType} to v${targetVersion}...`);
+      const success = performAgentUpdate(agentType, targetVersion);
+      if (success) {
+        log(`${agentType} updated to v${targetVersion}`);
+        sendMacNotification(
+          'Push: Agent Updated',
+          `${agentType} updated to v${targetVersion}`,
+          'Glass'
+        );
+      } else {
+        logError(`${agentType} update to v${targetVersion} failed`);
+      }
+    }
+    pendingAgentUpdates = null;
+  }
+}
+
+function logVersionParityWarnings() {
+  const warnings = checkVersionParity();
+  for (const w of warnings) {
+    log(`WARNING: ${w.agentType} v${w.installed} is below minimum v${w.required} — some features may not work`);
+  }
+}
+
 // ==================== Main Loop ====================
 
 async function pollAndExecute() {
@@ -2457,10 +2511,12 @@ async function mainLoop() {
   log(`Max concurrent tasks: ${MAX_CONCURRENT_TASKS}`);
   log(`E2EE: ${e2eeAvailable ? 'Available' : 'Not available'}`);
   log(`Auto-update: ${getAutoUpdateEnabled() ? 'Enabled' : 'Disabled'}`);
+  log(`Auto-update-agents: ${getAutoUpdateAgentsEnabled() ? 'Enabled' : 'Disabled'}`);
   const caps = getCapabilities();
   log(`Capabilities: gh=${caps.gh_cli}, auto-merge=${caps.auto_merge}, auto-complete=${caps.auto_complete}`);
   const agentVersions = getAgentVersions({ force: true });
   log(`Agent versions: ${formatAgentVersionSummary(agentVersions)}`);
+  logVersionParityWarnings();
   log(`Log file: ${LOG_FILE}`);
 
   // Show registered projects
@@ -2558,6 +2614,15 @@ async function mainLoop() {
       // Self-update check (throttled to once per hour, only applies when idle)
       if (getAutoUpdateEnabled()) {
         checkAndApplyUpdate();
+      }
+
+      // Agent CLI auto-update (throttled to once per hour, only applies when idle)
+      if (getAutoUpdateAgentsEnabled()) {
+        try {
+          checkAndApplyAgentUpdates();
+        } catch (error) {
+          logError(`Agent auto-update error: ${error.message}`);
+        }
       }
     } catch (error) {
       logError(`Poll error: ${error.message}`);

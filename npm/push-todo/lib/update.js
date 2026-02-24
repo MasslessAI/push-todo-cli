@@ -1,25 +1,30 @@
 /**
  * Manual update orchestrator for Push CLI.
  *
- * `push-todo update` performs three actions:
+ * `push-todo update` performs four actions:
  * 1. Self-update: check and install latest push-todo from npm
- * 2. Agent versions: detect and display installed agent CLI versions
- * 3. Project freshness: fetch and rebase registered projects that are behind
+ * 2. Agent CLIs: detect versions, check for updates, and install if available
+ * 3. Version parity: warn if agents are below minimum required versions
+ * 4. Project freshness: fetch and rebase registered projects that are behind
  *
  * Separation of concerns:
- * - Daemon: runs all three checks periodically (hourly, throttled, non-interactive)
+ * - Daemon: runs all checks periodically (hourly, throttled, non-interactive)
+ *   - Self-update: always (gated by auto-update setting)
+ *   - Agent updates: opt-in (gated by auto-update-agents setting, default OFF)
+ *   - Project freshness: always (gated by auto-update setting)
  * - This module: runs on explicit user request (immediate, verbose, interactive)
+ *   - Always checks and updates everything, no settings gate
  */
 
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-import { checkForUpdate, performUpdate, compareSemver } from './self-update.js';
-import { getAgentVersions, getKnownAgentTypes } from './agent-versions.js';
+import { checkForUpdate, performUpdate } from './self-update.js';
+import { getAgentVersions, getKnownAgentTypes, checkForAgentUpdate, performAgentUpdate, checkVersionParity } from './agent-versions.js';
 import { checkProjectFreshness } from './project-freshness.js';
 import { getRegistry } from './project-registry.js';
-import { bold, green, yellow, red, cyan, dim } from './utils/colors.js';
+import { bold, green, yellow, red, dim } from './utils/colors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -76,7 +81,7 @@ export async function runManualUpdate(values) {
   }
   console.log();
 
-  // ── 2. Agent versions ──────────────────────────────────
+  // ── 2. Agent CLIs ──────────────────────────────────────
   console.log(bold('  Agent CLIs'));
 
   const agentVersions = getAgentVersions({ force: true });
@@ -84,12 +89,41 @@ export async function runManualUpdate(values) {
     const info = agentVersions[type];
     const label = AGENT_LABELS[type] || type;
 
-    if (info.installed && info.version) {
-      console.log(`  ${label}: ${green('v' + info.version)}`);
-    } else if (info.installed) {
-      console.log(`  ${label}: ${yellow('installed')} ${dim('(version unknown)')}`);
-    } else {
+    if (!info.installed) {
       console.log(`  ${label}: ${dim('not installed')}`);
+      continue;
+    }
+
+    if (!info.version) {
+      console.log(`  ${label}: ${yellow('installed')} ${dim('(version unknown)')}`);
+      continue;
+    }
+
+    // Check for update
+    const updateInfo = checkForAgentUpdate(type);
+    if (updateInfo.available) {
+      console.log(`  ${label}: v${info.version} -> ${green('v' + updateInfo.latest)} available`);
+      console.log(`  Updating ${label} to v${updateInfo.latest}...`);
+      const success = performAgentUpdate(type, updateInfo.latest);
+      if (success) {
+        console.log(`  ${green('Updated successfully')}`);
+      } else {
+        console.log(`  ${red('Update failed')}`);
+      }
+    } else if (updateInfo.reason === 'too_recent') {
+      console.log(`  ${label}: ${green('v' + info.version)} ${dim(`(v${updateInfo.latest} published <1hr ago)`)}`);
+    } else {
+      console.log(`  ${label}: ${green('v' + info.version)}`);
+    }
+  }
+
+  // Version parity warnings
+  const parityWarnings = checkVersionParity();
+  if (parityWarnings.length > 0) {
+    console.log();
+    for (const w of parityWarnings) {
+      const label = AGENT_LABELS[w.agentType] || w.agentType;
+      console.log(`  ${yellow('Warning')}: ${label} v${w.installed} is below minimum v${w.required}`);
     }
   }
   console.log();

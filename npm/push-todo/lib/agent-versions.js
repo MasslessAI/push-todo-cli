@@ -1,8 +1,9 @@
 /**
- * Agent version detection and tracking for Push daemon.
+ * Agent version detection, tracking, and auto-update for Push daemon.
  *
  * Detects installed versions of Claude Code, OpenAI Codex, and OpenClaw CLIs.
  * Reports version parity with the push-todo CLI and flags outdated agents.
+ * Can auto-update agents via npm when enabled.
  *
  * Pattern: follows heartbeat.js — pure functions, internally throttled, non-fatal.
  */
@@ -11,25 +12,33 @@ import { execFileSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { compareSemver } from './self-update.js';
 
 const PUSH_DIR = join(homedir(), '.push');
 const VERSIONS_CACHE_FILE = join(PUSH_DIR, 'agent_versions.json');
+const LAST_AGENT_UPDATE_FILE = join(PUSH_DIR, 'last_agent_update_check');
 const CHECK_INTERVAL = 3600000; // 1 hour
+const AGENT_UPDATE_CHECK_INTERVAL = 3600000; // 1 hour
+const AGENT_VERSION_AGE_GATE = 3600000; // 1 hour — only install versions >1hr old
 
 // ==================== Agent Definitions ====================
 
 /**
- * Agent CLI definitions: command name, version flag, and how to parse output.
+ * Agent CLI definitions: command name, version flag, npm package, and how to parse output.
  *
  * Each agent has:
  * - cmd: the CLI binary name
  * - versionArgs: args to get version string
+ * - npmPackage: the npm package name for install/update
  * - parseVersion: extracts semver from command output
+ * - minVersion: minimum version required for push-todo compatibility (null = no minimum)
  */
 const AGENTS = {
   'claude-code': {
     cmd: 'claude',
     versionArgs: ['--version'],
+    npmPackage: '@anthropic-ai/claude-code',
+    minVersion: '2.0.0', // --worktree support
     parseVersion(output) {
       // "claude v2.1.41" or just "2.1.41"
       const match = output.match(/(\d+\.\d+\.\d+)/);
@@ -39,6 +48,8 @@ const AGENTS = {
   'openai-codex': {
     cmd: 'codex',
     versionArgs: ['--version'],
+    npmPackage: '@openai/codex',
+    minVersion: null,
     parseVersion(output) {
       const match = output.match(/(\d+\.\d+\.\d+)/);
       return match ? match[1] : null;
@@ -47,6 +58,8 @@ const AGENTS = {
   'openclaw': {
     cmd: 'openclaw',
     versionArgs: ['--version'],
+    npmPackage: 'openclaw',
+    minVersion: null,
     parseVersion(output) {
       const match = output.match(/(\d+\.\d+\.\d+)/);
       return match ? match[1] : null;
@@ -201,4 +214,148 @@ export function formatAgentVersionSummary(versions) {
  */
 export function getKnownAgentTypes() {
   return Object.keys(AGENTS);
+}
+
+// ==================== Agent Update ====================
+
+/**
+ * Fetch latest version info for an agent from npm.
+ *
+ * @param {string} agentType
+ * @returns {{ version: string, publishedAt: string|null }|null}
+ */
+function fetchLatestAgentVersion(agentType) {
+  const agent = AGENTS[agentType];
+  if (!agent?.npmPackage) return null;
+
+  try {
+    const result = execFileSync('npm', ['view', agent.npmPackage, '--json'], {
+      timeout: 15000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const data = JSON.parse(result);
+    const latest = data['dist-tags']?.latest || data.version;
+    return {
+      version: latest,
+      publishedAt: data.time?.[latest] || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if an agent has an update available.
+ *
+ * @param {string} agentType
+ * @returns {{ available: boolean, current: string|null, latest: string|null, reason: string }}
+ */
+export function checkForAgentUpdate(agentType) {
+  const currentInfo = detectAgentVersion(agentType);
+  if (!currentInfo.installed || !currentInfo.version) {
+    return { available: false, current: null, latest: null, reason: 'not_installed' };
+  }
+
+  const latestInfo = fetchLatestAgentVersion(agentType);
+  if (!latestInfo) {
+    return { available: false, current: currentInfo.version, latest: null, reason: 'registry_unreachable' };
+  }
+
+  if (compareSemver(currentInfo.version, latestInfo.version) >= 0) {
+    return { available: false, current: currentInfo.version, latest: latestInfo.version, reason: 'up_to_date' };
+  }
+
+  // Safety: only update to versions published >1 hour ago
+  if (latestInfo.publishedAt) {
+    const publishedAge = Date.now() - new Date(latestInfo.publishedAt).getTime();
+    if (publishedAge < AGENT_VERSION_AGE_GATE) {
+      return { available: false, current: currentInfo.version, latest: latestInfo.version, reason: 'too_recent' };
+    }
+  }
+
+  return { available: true, current: currentInfo.version, latest: latestInfo.version, reason: 'update_available' };
+}
+
+/**
+ * Install a specific version of an agent CLI globally.
+ *
+ * @param {string} agentType
+ * @param {string} targetVersion
+ * @returns {boolean} true if update succeeded
+ */
+export function performAgentUpdate(agentType, targetVersion) {
+  const agent = AGENTS[agentType];
+  if (!agent?.npmPackage) return false;
+
+  try {
+    execFileSync('npm', ['install', '-g', `${agent.npmPackage}@${targetVersion}`], {
+      timeout: 120000,
+      stdio: 'pipe',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check all installed agents for updates (throttled).
+ * Returns update results or null if throttled.
+ *
+ * @param {{ force?: boolean }} options
+ * @returns {Object.<string, { available: boolean, current: string|null, latest: string|null, reason: string }>|null}
+ */
+export function checkAllAgentUpdates({ force = false } = {}) {
+  // Throttle check
+  if (!force && existsSync(LAST_AGENT_UPDATE_FILE)) {
+    try {
+      const lastCheck = parseInt(readFileSync(LAST_AGENT_UPDATE_FILE, 'utf8').trim(), 10);
+      if (Date.now() - lastCheck < AGENT_UPDATE_CHECK_INTERVAL) {
+        return null;
+      }
+    } catch {}
+  }
+
+  // Record check time
+  try {
+    mkdirSync(PUSH_DIR, { recursive: true });
+    writeFileSync(LAST_AGENT_UPDATE_FILE, String(Date.now()));
+  } catch {}
+
+  const results = {};
+  for (const agentType of Object.keys(AGENTS)) {
+    const info = detectAgentVersion(agentType);
+    if (info.installed) {
+      results[agentType] = checkForAgentUpdate(agentType);
+    }
+  }
+  return results;
+}
+
+// ==================== Version Parity ====================
+
+/**
+ * Check version parity between installed agents and push-todo requirements.
+ * Returns warnings for agents that are below minimum required versions.
+ *
+ * @returns {{ agentType: string, installed: string, required: string }[]}
+ */
+export function checkVersionParity() {
+  const warnings = [];
+  for (const [agentType, agent] of Object.entries(AGENTS)) {
+    if (!agent.minVersion) continue;
+
+    const info = detectAgentVersion(agentType);
+    if (info.installed && info.version) {
+      if (compareSemver(info.version, agent.minVersion) < 0) {
+        warnings.push({
+          agentType,
+          installed: info.version,
+          required: agent.minVersion,
+        });
+      }
+    }
+  }
+  return warnings;
 }

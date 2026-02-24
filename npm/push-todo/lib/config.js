@@ -214,6 +214,27 @@ export function setAutoUpdateEnabled(enabled) {
 }
 
 /**
+ * Check if auto-update-agents is enabled for daemon agent CLI updates.
+ * Default: false (agent updates are opt-in since they're third-party CLIs)
+ *
+ * @returns {boolean}
+ */
+export function getAutoUpdateAgentsEnabled() {
+  const value = getConfigValue('AUTO_UPDATE_AGENTS', 'false');
+  return value.toLowerCase() === 'true' || value === '1' || value.toLowerCase() === 'yes';
+}
+
+/**
+ * Set auto-update-agents setting.
+ *
+ * @param {boolean} enabled
+ * @returns {boolean} True if successful
+ */
+export function setAutoUpdateAgentsEnabled(enabled) {
+  return setConfigValue('AUTO_UPDATE_AGENTS', enabled ? 'true' : 'false');
+}
+
+/**
  * Get the maximum batch size for queuing tasks.
  * Default: 5
  *
@@ -292,6 +313,7 @@ export function showSettings() {
   const autoMerge = getAutoMergeEnabled();
   const autoComplete = getAutoCompleteEnabled();
   const autoUpdate = getAutoUpdateEnabled();
+  const autoUpdateAgents = getAutoUpdateAgentsEnabled();
   const batchSize = getMaxBatchSize();
 
   console.log(`  auto-commit:    ${autoCommit ? 'ON' : 'OFF'}`);
@@ -304,7 +326,10 @@ export function showSettings() {
   console.log('                  Mark task completed after successful merge');
   console.log();
   console.log(`  auto-update:    ${autoUpdate ? 'ON' : 'OFF'}`);
-  console.log('                  Daemon auto-updates from npm when idle');
+  console.log('                  Daemon auto-updates push-todo from npm when idle');
+  console.log();
+  console.log(`  auto-update-agents: ${autoUpdateAgents ? 'ON' : 'OFF'}`);
+  console.log('                  Daemon auto-updates agent CLIs (Claude, Codex, OpenClaw)');
   console.log();
   console.log(`  batch-size:     ${batchSize}`);
   console.log('                  Max tasks for batch queue (1-20)');
@@ -387,6 +412,22 @@ export function toggleSetting(settingName) {
     return false;
   }
 
+  if (normalized === 'auto-update-agents') {
+    const current = getAutoUpdateAgentsEnabled();
+    const newValue = !current;
+    if (setAutoUpdateAgentsEnabled(newValue)) {
+      console.log(`Auto-update-agents is now ${newValue ? 'ON' : 'OFF'}`);
+      if (newValue) {
+        console.log('Daemon will auto-update agent CLIs (Claude Code, Codex, OpenClaw) when idle.');
+      } else {
+        console.log('Agent CLIs will NOT be auto-updated. Use "push-todo update" for manual updates.');
+      }
+      return true;
+    }
+    console.error('Failed to update setting');
+    return false;
+  }
+
   if (normalized === 'batch-size') {
     const batchSize = getMaxBatchSize();
     console.log(`Current batch size: ${batchSize}`);
@@ -395,7 +436,7 @@ export function toggleSetting(settingName) {
   }
 
   console.error(`Unknown setting: ${settingName}`);
-  console.error('Available settings: auto-commit, auto-merge, auto-complete, auto-update, batch-size');
+  console.error('Available settings: auto-commit, auto-merge, auto-complete, auto-update, auto-update-agents, batch-size');
   return false;
 }
 

@@ -17,12 +17,16 @@ const LAST_UPDATE_CHECK_FILE = join(PUSH_DIR, 'last_update_check');
 const UPDATE_CHECK_INTERVAL = 3600000; // 1 hour
 
 /**
- * Compare semver strings.
+ * Compare semver strings (strips pre-release/build metadata before comparing).
+ * Handles formats like "2.1.41", "2026.2.22-2", "1.0.0+build.123".
  * @returns -1 if a < b, 0 if equal, 1 if a > b
  */
 export function compareSemver(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
+  // Strip pre-release (-beta.1) and build metadata (+build.123)
+  const cleanA = a.split('-')[0].split('+')[0];
+  const cleanB = b.split('-')[0].split('+')[0];
+  const pa = cleanA.split('.').map(Number);
+  const pb = cleanB.split('.').map(Number);
   for (let i = 0; i < 3; i++) {
     if ((pa[i] || 0) < (pb[i] || 0)) return -1;
     if ((pa[i] || 0) > (pb[i] || 0)) return 1;
