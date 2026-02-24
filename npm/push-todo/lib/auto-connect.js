@@ -20,6 +20,38 @@ import { discoverAllProjects } from './discovery.js';
 import { createSpinner } from './utils/spinner.js';
 import { bold, green, red, dim, cyan } from './utils/colors.js';
 import { ensureDaemonRunning } from './daemon-health.js';
+import { install as installLaunchAgent, getStatus as getLaunchAgentStatus } from './launchagent.js';
+
+/**
+ * Install or update LaunchAgent (macOS only).
+ * Called at the end of auto-connect, even for early-exit paths.
+ */
+function installLaunchAgentIfNeeded() {
+  if (process.platform !== 'darwin') return;
+
+  const laStatus = getLaunchAgentStatus();
+  if (!laStatus.installed) {
+    const laSpinner = createSpinner();
+    laSpinner.start('Installing LaunchAgent for auto-start on login...');
+
+    const laResult = installLaunchAgent();
+    if (laResult.success) {
+      laSpinner.succeed('LaunchAgent installed — daemon starts automatically on login');
+    } else {
+      laSpinner.fail(`LaunchAgent: ${laResult.message}`);
+      console.log(`  ${dim('Daemon will still self-heal via push-todo commands.')}`);
+    }
+  } else {
+    // Already installed — ensure it's loaded and up to date
+    const laResult = installLaunchAgent();
+    if (laResult.alreadyInstalled) {
+      console.log(`  ${green('✓')} LaunchAgent already configured`);
+    } else if (laResult.success) {
+      console.log(`  ${green('✓')} LaunchAgent updated`);
+    }
+  }
+  console.log('');
+}
 
 /**
  * Run the auto-connect flow.
@@ -98,6 +130,8 @@ export async function runAutoConnect(options = {}) {
     console.log('  No projects with git remotes found.');
     console.log(`  ${dim('Projects must have a git remote to be registered.')}`);
     console.log('');
+    // Still install LaunchAgent even with no projects
+    installLaunchAgentIfNeeded();
     return;
   }
 
@@ -127,6 +161,8 @@ export async function runAutoConnect(options = {}) {
     console.log(`  ${'='.repeat(40)}`);
     console.log(`  All ${alreadyConnected} projects already connected.`);
     console.log('');
+    // Still install LaunchAgent even when all projects connected
+    installLaunchAgentIfNeeded();
     return;
   }
 
@@ -192,4 +228,7 @@ export async function runAutoConnect(options = {}) {
     console.log(`  Run ${cyan("'push-todo'")} to see your tasks.`);
   }
   console.log('');
+
+  // Phase 6: Install LaunchAgent (macOS only)
+  installLaunchAgentIfNeeded();
 }

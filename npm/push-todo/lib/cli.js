@@ -15,6 +15,7 @@ import { runConnect } from './connect.js';
 import { startWatch } from './watch.js';
 import { showSettings, toggleSetting, setMaxBatchSize } from './config.js';
 import { ensureDaemonRunning, getDaemonStatus, startDaemon, stopDaemon } from './daemon-health.js';
+import { install as installLaunchAgent, uninstall as uninstallLaunchAgent, getStatus as getLaunchAgentStatus } from './launchagent.js';
 import { getScreenshotPath, screenshotExists, openScreenshot } from './utils/screenshots.js';
 import { bold, red, cyan, dim, green } from './utils/colors.js';
 import { getMachineId } from './machine-id.js';
@@ -79,6 +80,8 @@ ${bold('OPTIONS:')}
   --daemon-status                  Show daemon status
   --daemon-start                   Start daemon manually
   --daemon-stop                    Stop daemon
+  --daemon-install                 Install LaunchAgent (auto-start on login)
+  --daemon-uninstall               Remove LaunchAgent
   --commands                       Show available user commands
   --json                           Output as JSON
   --version, -v                    Show version
@@ -155,6 +158,8 @@ const options = {
   'daemon-status': { type: 'boolean' },
   'daemon-start': { type: 'boolean' },
   'daemon-stop': { type: 'boolean' },
+  'daemon-install': { type: 'boolean' },
+  'daemon-uninstall': { type: 'boolean' },
   'commands': { type: 'boolean' },
   'json': { type: 'boolean' },
   'version': { type: 'boolean', short: 'v' },
@@ -254,6 +259,14 @@ export async function run(argv) {
     } else {
       console.log(`${bold('Daemon:')} Not running`);
     }
+    // Show LaunchAgent status
+    const laStatus = getLaunchAgentStatus();
+    if (laStatus.installed) {
+      console.log(`${bold('LaunchAgent:')} Installed${laStatus.loaded ? ' (loaded)' : ' (not loaded)'}`);
+    } else {
+      console.log(`${bold('LaunchAgent:')} Not installed`);
+      console.log(dim('  Run: push-todo --daemon-install'));
+    }
     return;
   }
 
@@ -281,10 +294,44 @@ export async function run(argv) {
       const success = stopDaemon();
       if (success) {
         console.log('Daemon stopped');
+        const laStatus = getLaunchAgentStatus();
+        if (laStatus.installed && laStatus.loaded) {
+          console.log(dim('Note: LaunchAgent will restart the daemon automatically.'));
+          console.log(dim('To fully stop: push-todo --daemon-uninstall'));
+        }
       } else {
         console.error(red('Failed to stop daemon'));
         process.exit(1);
       }
+    }
+    return;
+  }
+
+  if (values['daemon-install']) {
+    const result = installLaunchAgent();
+    if (result.success) {
+      if (result.alreadyInstalled) {
+        console.log('LaunchAgent already installed');
+      } else {
+        console.log('LaunchAgent installed — daemon will start automatically on login');
+      }
+      const laStatus = getLaunchAgentStatus();
+      console.log(dim(`Plist: ${laStatus.plistPath}`));
+    } else {
+      console.error(red(result.message));
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (values['daemon-uninstall']) {
+    const result = uninstallLaunchAgent();
+    if (result.success) {
+      console.log(result.message);
+      console.log(dim('Daemon will still self-heal via push-todo commands.'));
+    } else {
+      console.error(red(result.message));
+      process.exit(1);
     }
     return;
   }

@@ -27,6 +27,7 @@ import { checkAndRunDueJobs } from './cron.js';
 import { runHeartbeatChecks } from './heartbeat.js';
 import { getAgentVersions, formatAgentVersionSummary, checkAllAgentUpdates, performAgentUpdate, checkVersionParity } from './agent-versions.js';
 import { checkAllProjectsFreshness } from './project-freshness.js';
+import { getStatus as getLaunchAgentStatus, install as refreshLaunchAgent } from './launchagent.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2918,7 +2919,16 @@ function checkAndApplyUpdate() {
     if (success) {
       log(`Update to v${pendingUpdateVersion} successful. Restarting daemon...`);
 
-      // Spawn new daemon from updated code, then exit
+      // If LaunchAgent is installed, refresh plist (paths may have changed)
+      // and let launchd handle the restart instead of spawning manually
+      const laStatus = getLaunchAgentStatus();
+      if (laStatus.installed && laStatus.loaded) {
+        refreshLaunchAgent(); // Update plist with current node/daemon paths
+        log('LaunchAgent installed — letting launchd restart daemon.');
+        process.exit(0);
+      }
+
+      // No LaunchAgent — spawn new daemon manually, then exit
       const daemonScript = join(__dirname, 'daemon.js');
       const selfUpdateEnv = { ...process.env, PUSH_DAEMON: '1' };
       delete selfUpdateEnv.CLAUDECODE;  // Strip to avoid leaking into Claude child processes

@@ -407,11 +407,11 @@ async function main() {
     }
     console.log('');
     console.log('[push-todo] Quick start:');
-    console.log('[push-todo]   push-todo connect     Set up authentication');
-    console.log('[push-todo]   push-todo             List your tasks');
-    if (claudeSuccess) console.log('[push-todo]   /push-todo            Use in Claude Code');
-    if (codexSuccess) console.log('[push-todo]   $push-todo            Use in OpenAI Codex');
-    if (openclawSuccess) console.log('[push-todo]   /push-todo            Use in OpenClaw');
+    console.log('[push-todo]   push-todo connect --auto   One-command setup (auth + projects + daemon)');
+    console.log('[push-todo]   push-todo                  List your tasks');
+    if (claudeSuccess) console.log('[push-todo]   /push-todo                Use in Claude Code');
+    if (codexSuccess) console.log('[push-todo]   $push-todo                Use in OpenAI Codex');
+    if (openclawSuccess) console.log('[push-todo]   /push-todo                Use in OpenClaw');
     return;
   }
 
@@ -440,16 +440,16 @@ async function main() {
   }
   console.log('');
   console.log('[push-todo] Quick start:');
-  console.log('[push-todo]   push-todo connect     Set up authentication');
-  console.log('[push-todo]   push-todo             List your tasks');
+  console.log('[push-todo]   push-todo connect --auto   One-command setup (auth + projects + daemon)');
+  console.log('[push-todo]   push-todo                  List your tasks');
   if (claudeSuccess) {
-    console.log('[push-todo]   /push-todo            Use in Claude Code');
+    console.log('[push-todo]   /push-todo                Use in Claude Code');
   }
   if (codexSuccess) {
-    console.log('[push-todo]   $push-todo            Use in OpenAI Codex');
+    console.log('[push-todo]   $push-todo                Use in OpenAI Codex');
   }
   if (openclawSuccess) {
-    console.log('[push-todo]   /push-todo            Use in OpenClaw');
+    console.log('[push-todo]   /push-todo                Use in OpenClaw');
   }
 }
 
