@@ -15,7 +15,7 @@
 
 import { randomUUID } from 'crypto';
 import { spawn, execSync, execFileSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, unlinkSync, statSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, unlinkSync, statSync, renameSync, readdirSync } from 'fs';
 import { homedir, hostname, platform } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -47,6 +47,10 @@ const RETRY_BACKOFF_FACTOR = 2;
 // Certainty thresholds
 const CERTAINTY_HIGH_THRESHOLD = 0.7;
 const CERTAINTY_LOW_THRESHOLD = 0.4;
+
+// Idle auto-recovery (Level B)
+const IDLE_TIMEOUT_MS = 900000; // 15 min no stdout → kill (smarter than absolute timeout)
+const HEARTBEAT_INTERVAL_MS = 300000; // 5 min progress heartbeat to Supabase (Level A)
 
 // Stuck detection
 const STUCK_IDLE_THRESHOLD = 600000; // 10 min
@@ -110,6 +114,7 @@ const taskLastOutput = new Map(); // displayNumber -> timestamp
 const taskStdoutBuffer = new Map(); // displayNumber -> lines[]
 const taskStderrBuffer = new Map(); // displayNumber -> lines[]
 const taskProjectPaths = new Map(); // displayNumber -> projectPath
+const taskLastHeartbeat = new Map(); // displayNumber -> timestamp of last progress heartbeat
 let daemonStartTime = null;
 
 // ==================== Utilities ====================
@@ -283,6 +288,59 @@ let cachedCapabilities = null;
 let lastCapabilityCheck = 0;
 const CAPABILITY_CHECK_INTERVAL = 3600000; // 1 hour
 
+/**
+ * Discover skills for all registered projects.
+ * Scans ~/.claude/skills/ (global) and <projectPath>/.claude/skills/ (per-project).
+ * Returns: { "github.com/user/repo": ["skill1", "skill2"], ... }
+ */
+function discoverProjectSkills() {
+  const globalSkillsDir = join(homedir(), '.claude', 'skills');
+  const globalSkills = [];
+
+  // Enumerate global skills
+  if (existsSync(globalSkillsDir)) {
+    try {
+      for (const entry of readdirSync(globalSkillsDir, { withFileTypes: true })) {
+        if (entry.isDirectory() || entry.isSymbolicLink()) {
+          globalSkills.push(entry.name);
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // For each registered project, enumerate project-local skills and merge with global
+  const result = {};
+  if (!existsSync(REGISTRY_FILE)) return result;
+
+  try {
+    const data = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'));
+    for (const [, info] of Object.entries(data.projects || {})) {
+      const remote = info.gitRemote;
+      const localPath = info.localPath || info.local_path;
+      if (!remote || !localPath) continue;
+
+      const projectSkillsDir = join(localPath, '.claude', 'skills');
+      const projectSkills = new Set(globalSkills);
+
+      if (existsSync(projectSkillsDir)) {
+        try {
+          for (const entry of readdirSync(projectSkillsDir, { withFileTypes: true })) {
+            if (entry.isDirectory() || entry.isSymbolicLink()) {
+              projectSkills.add(entry.name);
+            }
+          }
+        } catch { /* ignore */ }
+      }
+
+      if (projectSkills.size > 0) {
+        result[remote] = [...projectSkills].sort();
+      }
+    }
+  } catch { /* ignore */ }
+
+  return result;
+}
+
 function detectCapabilities() {
   const caps = {
     auto_merge: getAutoMergeEnabled(),
@@ -301,6 +359,8 @@ function detectCapabilities() {
   } catch {
     caps.gh_cli = 'not_installed';
   }
+
+  caps.project_skills = discoverProjectSkills();
 
   return caps;
 }
@@ -1340,6 +1400,151 @@ function checkTaskIdle(displayNumber) {
   return false;
 }
 
+// ==================== Progress Heartbeat (Level A) ====================
+
+async function sendProgressHeartbeats() {
+  const now = Date.now();
+
+  for (const [displayNumber, taskInfo] of runningTasks) {
+    const info = taskDetails.get(displayNumber) || {};
+
+    // Skip tasks awaiting user confirmation (not truly hanging)
+    if (info.phase === 'awaiting_confirmation') continue;
+
+    // Throttle: only send every HEARTBEAT_INTERVAL_MS
+    const lastHeartbeat = taskLastHeartbeat.get(displayNumber) || taskInfo.startTime;
+    if (now - lastHeartbeat < HEARTBEAT_INTERVAL_MS) continue;
+
+    // Compute metrics
+    const elapsedSec = Math.floor((now - taskInfo.startTime) / 1000);
+    const elapsedMin = Math.floor(elapsedSec / 60);
+    const lastOutputTs = taskLastOutput.get(displayNumber);
+    const idleSec = lastOutputTs ? Math.floor((now - lastOutputTs) / 1000) : elapsedSec;
+    const idleMin = Math.floor(idleSec / 60);
+
+    const activityDesc = idleSec < 60 ? 'active' : `idle ${idleMin}m`;
+    const phase = info.phase || 'executing';
+    const eventSummary = `Running for ${elapsedMin}m. Last activity: ${activityDesc}. Phase: ${phase}.`;
+
+    log(`Task #${displayNumber}: sending progress heartbeat (${eventSummary})`);
+
+    // Update throttle timestamp BEFORE the async call to prevent concurrent sends
+    taskLastHeartbeat.set(displayNumber, now);
+
+    // Send event-only update (no status field) — non-fatal if it fails
+    const taskId = info.taskId || null;
+    apiRequest('update-task-execution', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        todoId: taskId,
+        displayNumber,
+        event: {
+          type: 'progress',
+          timestamp: new Date().toISOString(),
+          machineName: getMachineName() || undefined,
+          summary: eventSummary
+        }
+        // No status field — event-only update, won't change execution_status
+      })
+    }).catch(err => {
+      log(`Task #${displayNumber}: heartbeat failed (non-fatal): ${err.message}`);
+    });
+    // NOTE: intentionally not awaited — heartbeats are fire-and-forget
+    // to avoid blocking the poll loop when Supabase is slow
+  }
+}
+
+// ==================== Idle Auto-Recovery (Level B) ====================
+
+async function killIdleTasks() {
+  const now = Date.now();
+  const idleTimedOut = [];
+
+  for (const [displayNumber, taskInfo] of runningTasks) {
+    const info = taskDetails.get(displayNumber) || {};
+
+    // Exempt: tasks awaiting user confirmation
+    if (info.phase === 'awaiting_confirmation') continue;
+
+    const lastOutput = taskLastOutput.get(displayNumber);
+    if (!lastOutput) continue; // No output tracking yet — not idle, just starting
+
+    const idleMs = now - lastOutput;
+    if (idleMs > IDLE_TIMEOUT_MS) {
+      log(`Task #${displayNumber} IDLE TIMEOUT: ${Math.floor(idleMs / 1000)}s since last output`);
+      idleTimedOut.push(displayNumber);
+    }
+  }
+
+  for (const displayNumber of idleTimedOut) {
+    const taskInfo = runningTasks.get(displayNumber);
+    if (!taskInfo) continue;
+
+    const info = taskDetails.get(displayNumber) || {};
+    const projectPath = taskProjectPaths.get(displayNumber);
+    const elapsedSec = Math.floor((now - taskInfo.startTime) / 1000);
+    const idleSec = Math.floor((now - (taskLastOutput.get(displayNumber) || taskInfo.startTime)) / 1000);
+    const durationStr = elapsedSec < 60 ? `${elapsedSec}s` : `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`;
+    const machineName = getMachineName() || 'Mac';
+
+    // Extract semantic summary WHILE session is still alive
+    // (a live session produces a better "what have you done so far" answer)
+    const sessionId = taskInfo.sessionId;
+    const worktreePath = getWorktreePath(displayNumber, projectPath);
+    const summaryPath = existsSync(worktreePath) ? worktreePath : (projectPath || process.cwd());
+    log(`Task #${displayNumber}: extracting pre-kill summary...`);
+    const idleSummary = extractSemanticSummary(summaryPath, sessionId);
+
+    // Now kill the process
+    log(`Task #${displayNumber}: killing idle process (PID: ${taskInfo.process.pid})`);
+    try {
+      taskInfo.process.kill('SIGTERM');
+      await new Promise(r => setTimeout(r, 5000));
+      taskInfo.process.kill('SIGKILL');
+    } catch {}
+
+    runningTasks.delete(displayNumber);
+    cleanupWorktree(displayNumber, projectPath);
+
+    const idleError = idleSummary
+      ? `${idleSummary}\nSession went idle for ${Math.floor(idleSec / 60)}m with no output. Killed after ${durationStr} on ${machineName}.`
+      : `Session went idle for ${Math.floor(idleSec / 60)}m with no output (limit: ${IDLE_TIMEOUT_MS / 60000}m). Killed after ${durationStr} on ${machineName}.`;
+
+    await updateTaskStatus(displayNumber, 'failed', {
+      error: idleError,
+      sessionId
+    }, info.taskId);
+
+    if (NOTIFY_ON_FAILURE) {
+      sendMacNotification(
+        `Task #${displayNumber} idle timeout`,
+        `${(info.summary || 'Unknown').slice(0, 40)}... idle ${Math.floor(idleSec / 60)}m`,
+        'Basso'
+      );
+    }
+
+    trackCompleted({
+      displayNumber,
+      summary: info.summary || 'Unknown task',
+      completedAt: new Date().toISOString(),
+      duration: elapsedSec,
+      status: 'idle_timeout'
+    });
+
+    // Full cleanup of all tracking Maps
+    taskDetails.delete(displayNumber);
+    taskLastOutput.delete(displayNumber);
+    taskStdoutBuffer.delete(displayNumber);
+    taskStderrBuffer.delete(displayNumber);
+    taskProjectPaths.delete(displayNumber);
+    taskLastHeartbeat.delete(displayNumber);
+  }
+
+  if (idleTimedOut.length > 0) {
+    updateStatusFile();
+  }
+}
+
 // ==================== Session ID Extraction ====================
 
 function extractSessionIdFromStdout(proc, buffer) {
@@ -1616,7 +1821,6 @@ async function executeTask(task) {
     ? [
         '--continue', previousSessionId,
         '-p', prompt,
-        '--worktree', worktreeName,
         '--allowedTools', allowedTools,
         '--output-format', 'json',
         '--permission-mode', 'bypassPermissions',
@@ -1624,7 +1828,6 @@ async function executeTask(task) {
       ]
     : [
         '-p', prompt,
-        '--worktree', worktreeName,
         '--allowedTools', allowedTools,
         '--output-format', 'json',
         '--permission-mode', 'bypassPermissions',
@@ -1660,6 +1863,7 @@ async function executeTask(task) {
     taskLastOutput.set(displayNumber, Date.now());
     taskStdoutBuffer.set(displayNumber, []);
     taskStderrBuffer.set(displayNumber, []);
+    taskLastHeartbeat.set(displayNumber, Date.now());
 
     // Monitor stderr (critical for diagnosing fast exits)
     child.stderr.on('data', (data) => {
@@ -1715,6 +1919,7 @@ async function executeTask(task) {
       runningTasks.delete(displayNumber);
       await updateTaskStatus(displayNumber, 'failed', { error: error.message }, taskId);
       taskDetails.delete(displayNumber);
+      taskLastHeartbeat.delete(displayNumber);
       updateStatusFile();
     });
 
@@ -1938,6 +2143,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
   taskStdoutBuffer.delete(displayNumber);
   taskStderrBuffer.delete(displayNumber);
   taskProjectPaths.delete(displayNumber);
+  taskLastHeartbeat.delete(displayNumber);
   updateStatusFile();
 }
 
@@ -2016,6 +2222,13 @@ function updateStatusFile() {
 // ==================== Task Checking ====================
 
 async function checkTimeouts() {
+  // Level A: Send progress heartbeats for long-running tasks
+  await sendProgressHeartbeats();
+
+  // Level B: Kill tasks that have been idle too long (fires at 15 min, before 60 min absolute)
+  await killIdleTasks();
+
+  // Absolute timeout (safety net — 60 min wall clock)
   const now = Date.now();
   const timedOut = [];
 
@@ -2082,6 +2295,7 @@ async function checkTimeouts() {
     taskStdoutBuffer.delete(displayNumber);
     taskStderrBuffer.delete(displayNumber);
     taskProjectPaths.delete(displayNumber);
+    taskLastHeartbeat.delete(displayNumber);
     cleanupWorktree(displayNumber, projectPath);
   }
 
