@@ -115,6 +115,12 @@ const taskStdoutBuffer = new Map(); // displayNumber -> lines[]
 const taskStderrBuffer = new Map(); // displayNumber -> lines[]
 const taskProjectPaths = new Map(); // displayNumber -> projectPath
 const taskLastHeartbeat = new Map(); // displayNumber -> timestamp of last progress heartbeat
+
+// Stream-json state (Phase 1: real-time progress)
+const taskStreamLineBuffer = new Map(); // displayNumber -> partial NDJSON line fragment
+const taskActivityState = new Map(); // displayNumber -> { filesRead: Set, filesEdited: Set, currentTool: string, lastText: string }
+const taskLastStreamProgress = new Map(); // displayNumber -> timestamp of last stream progress sent
+const STREAM_PROGRESS_THROTTLE_MS = 30000; // 30s between stream progress updates to Supabase
 let daemonStartTime = null;
 
 // ==================== Utilities ====================
@@ -1332,6 +1338,155 @@ function checkStuckPatterns(displayNumber, line) {
   return null;
 }
 
+// ==================== Stream-JSON Parsing (Phase 1) ====================
+
+function parseStreamJsonLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed || !trimmed.startsWith('{')) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function extractTextFromContent(content) {
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter(block => block.type === 'text' && block.text)
+    .map(block => block.text)
+    .join('\n');
+}
+
+function extractToolCallsFromContent(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter(block => block.type === 'tool_use')
+    .map(block => ({ name: block.name, input: block.input || {} }));
+}
+
+function processStreamEvent(displayNumber, event) {
+  if (!event || !event.type) return;
+
+  const activity = taskActivityState.get(displayNumber) || {
+    filesRead: new Set(),
+    filesEdited: new Set(),
+    currentTool: null,
+    lastText: '',
+    sessionId: null
+  };
+
+  // Extract session_id from system init or result messages
+  if (event.type === 'system' && event.session_id) {
+    activity.sessionId = event.session_id;
+  }
+  if (event.type === 'result' && event.session_id) {
+    activity.sessionId = event.session_id;
+  }
+
+  // Extract activity from assistant messages
+  if (event.type === 'assistant') {
+    const content = event.message?.content;
+    if (!content) { taskActivityState.set(displayNumber, activity); return; }
+
+    const text = extractTextFromContent(content);
+    if (text) {
+      activity.lastText = text.slice(0, 200);
+
+      // Run existing text-based checks on extracted content
+      if (text.includes('[push-confirm] Waiting for')) {
+        updateTaskDetail(displayNumber, {
+          phase: 'awaiting_confirmation',
+          detail: 'Waiting for user confirmation on iPhone'
+        });
+      }
+
+      const stuckReason = checkStuckPatterns(displayNumber, text);
+      if (stuckReason) {
+        log(`Task #${displayNumber} may be stuck: ${stuckReason}`);
+        updateTaskDetail(displayNumber, {
+          phase: 'stuck',
+          detail: `Waiting for input: ${stuckReason}`
+        });
+      }
+    }
+
+    const toolCalls = extractToolCallsFromContent(content);
+    for (const tool of toolCalls) {
+      activity.currentTool = tool.name;
+      const filePath = tool.input?.file_path || tool.input?.path;
+      if (filePath) {
+        if (tool.name === 'Read') {
+          activity.filesRead.add(filePath);
+        } else if (tool.name === 'Edit' || tool.name === 'Write') {
+          activity.filesEdited.add(filePath);
+        }
+      }
+    }
+  }
+
+  taskActivityState.set(displayNumber, activity);
+
+  // Throttled progress reporting to Supabase
+  maybesSendStreamProgress(displayNumber, activity);
+}
+
+function maybesSendStreamProgress(displayNumber, activity) {
+  const now = Date.now();
+  const lastSent = taskLastStreamProgress.get(displayNumber) || 0;
+  if (now - lastSent < STREAM_PROGRESS_THROTTLE_MS) return;
+  taskLastStreamProgress.set(displayNumber, now);
+
+  const info = taskDetails.get(displayNumber) || {};
+  const taskId = info.taskId || null;
+  const taskInfo = runningTasks.get(displayNumber);
+  if (!taskInfo) return;
+
+  const elapsedSec = Math.floor((now - taskInfo.startTime) / 1000);
+  const elapsedMin = Math.floor(elapsedSec / 60);
+
+  // Build a meaningful summary from stream activity
+  const parts = [`Running for ${elapsedMin}m.`];
+  if (activity.filesEdited.size > 0) {
+    const editedList = [...activity.filesEdited].map(f => f.split('/').pop()).slice(-5);
+    parts.push(`Edited: ${editedList.join(', ')}`);
+  }
+  if (activity.filesRead.size > 0) {
+    parts.push(`Read ${activity.filesRead.size} files.`);
+  }
+  if (activity.currentTool) {
+    parts.push(`Current: ${activity.currentTool}`);
+  }
+  if (activity.lastText && !activity.currentTool) {
+    parts.push(activity.lastText.slice(0, 80));
+  }
+
+  const eventSummary = parts.join(' ');
+
+  log(`Task #${displayNumber}: stream progress (${eventSummary})`);
+
+  // Also update the existing heartbeat timestamp to prevent duplicate generic heartbeats
+  taskLastHeartbeat.set(displayNumber, now);
+
+  apiRequest('update-task-execution', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      todoId: taskId,
+      displayNumber,
+      event: {
+        type: 'progress',
+        timestamp: new Date().toISOString(),
+        machineName: getMachineName() || undefined,
+        summary: eventSummary,
+        filesEdited: [...activity.filesEdited].slice(-10),
+        filesRead: activity.filesRead.size
+      }
+    })
+  }).catch(err => {
+    log(`Task #${displayNumber}: stream progress failed (non-fatal): ${err.message}`);
+  });
+}
+
 function monitorTaskStdout(displayNumber, proc) {
   if (!proc.stdout) return;
 
@@ -1429,7 +1584,23 @@ async function sendProgressHeartbeats() {
 
     const activityDesc = idleSec < 60 ? 'active' : `idle ${idleMin}m`;
     const phase = info.phase || 'executing';
-    const eventSummary = `Running for ${elapsedMin}m. Last activity: ${activityDesc}. Phase: ${phase}.`;
+
+    // Enrich heartbeat with stream activity data when available
+    const activity = taskActivityState.get(displayNumber);
+    const parts = [`Running for ${elapsedMin}m. Last activity: ${activityDesc}. Phase: ${phase}.`];
+    const eventExtra = {};
+    if (activity) {
+      if (activity.filesEdited.size > 0) {
+        const editedList = [...activity.filesEdited].map(f => f.split('/').pop()).slice(-5);
+        parts.push(`Edited: ${editedList.join(', ')}`);
+        eventExtra.filesEdited = [...activity.filesEdited].slice(-10);
+      }
+      if (activity.filesRead.size > 0) {
+        parts.push(`Read ${activity.filesRead.size} files.`);
+        eventExtra.filesRead = activity.filesRead.size;
+      }
+    }
+    const eventSummary = parts.join(' ');
 
     log(`Task #${displayNumber}: sending progress heartbeat (${eventSummary})`);
 
@@ -1447,7 +1618,8 @@ async function sendProgressHeartbeats() {
           type: 'progress',
           timestamp: new Date().toISOString(),
           machineName: getMachineName() || undefined,
-          summary: eventSummary
+          summary: eventSummary,
+          ...eventExtra
         }
         // No status field — event-only update, won't change execution_status
       })
@@ -1543,6 +1715,9 @@ async function killIdleTasks() {
     taskStderrBuffer.delete(displayNumber);
     taskProjectPaths.delete(displayNumber);
     taskLastHeartbeat.delete(displayNumber);
+    taskStreamLineBuffer.delete(displayNumber);
+    taskActivityState.delete(displayNumber);
+    taskLastStreamProgress.delete(displayNumber);
   }
 
   if (idleTimedOut.length > 0) {
@@ -1552,7 +1727,14 @@ async function killIdleTasks() {
 
 // ==================== Session ID Extraction ====================
 
-function extractSessionIdFromStdout(proc, buffer) {
+function extractSessionIdFromStdout(proc, buffer, displayNumber) {
+  // First: check stream activity state (populated by stream-json parsing)
+  if (displayNumber != null) {
+    const activity = taskActivityState.get(displayNumber);
+    if (activity?.sessionId) return activity.sessionId;
+  }
+
+  // Fallback: drain remaining stdout and scan for session_id in JSON lines
   let remaining = '';
   if (proc.stdout) {
     try {
@@ -1562,7 +1744,6 @@ function extractSessionIdFromStdout(proc, buffer) {
 
   const allOutput = buffer.join('\n') + '\n' + remaining;
 
-  // Try to parse JSON output
   for (const line of allOutput.split('\n')) {
     const trimmed = line.trim();
     if (trimmed.startsWith('{') && trimmed.includes('session_id')) {
@@ -1827,14 +2008,14 @@ async function executeTask(task) {
         '--continue', previousSessionId,
         '-p', prompt,
         '--allowedTools', allowedTools,
-        '--output-format', 'json',
+        '--output-format', 'stream-json',
         '--permission-mode', 'bypassPermissions',
         '--session-id', preAssignedSessionId
       ]
     : [
         '-p', prompt,
         '--allowedTools', allowedTools,
-        '--output-format', 'json',
+        '--output-format', 'stream-json',
         '--permission-mode', 'bypassPermissions',
         '--session-id', preAssignedSessionId
       ];
@@ -1883,25 +2064,44 @@ async function executeTask(task) {
       }
     });
 
-    // Monitor stdout
-    child.stdout.on('data', (data) => {
-      const lines = data.toString().split('\n');
-      for (const line of lines) {
-        if (line.trim()) {
-          taskLastOutput.set(displayNumber, Date.now());
-          const buffer = taskStdoutBuffer.get(displayNumber) || [];
-          buffer.push(line);
-          if (buffer.length > 20) buffer.shift();
-          taskStdoutBuffer.set(displayNumber, buffer);
+    // Monitor stdout (stream-json NDJSON parsing)
+    taskStreamLineBuffer.set(displayNumber, '');
+    taskActivityState.set(displayNumber, {
+      filesRead: new Set(), filesEdited: new Set(),
+      currentTool: null, lastText: '', sessionId: null
+    });
+    taskLastStreamProgress.set(displayNumber, Date.now());
 
-          // Detect confirmation waiting (exempt from timeouts)
+    child.stdout.on('data', (data) => {
+      taskLastOutput.set(displayNumber, Date.now());
+
+      // NDJSON line buffering: handle chunks that split across line boundaries
+      const pending = (taskStreamLineBuffer.get(displayNumber) || '') + data.toString();
+      const lines = pending.split('\n');
+      // Last element is either empty (chunk ended with \n) or a partial line
+      taskStreamLineBuffer.set(displayNumber, lines.pop() || '');
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        // Keep raw lines in circular buffer for debugging/fallback
+        const buffer = taskStdoutBuffer.get(displayNumber) || [];
+        buffer.push(line);
+        if (buffer.length > 50) buffer.shift();
+        taskStdoutBuffer.set(displayNumber, buffer);
+
+        // Parse as NDJSON stream event
+        const event = parseStreamJsonLine(line);
+        if (event) {
+          processStreamEvent(displayNumber, event);
+        } else {
+          // Fallback: line isn't valid JSON — run legacy text checks
           if (line.includes('[push-confirm] Waiting for')) {
             updateTaskDetail(displayNumber, {
               phase: 'awaiting_confirmation',
               detail: 'Waiting for user confirmation on iPhone'
             });
           }
-
           const stuckReason = checkStuckPatterns(displayNumber, line);
           if (stuckReason) {
             log(`Task #${displayNumber} may be stuck: ${stuckReason}`);
@@ -1925,6 +2125,9 @@ async function executeTask(task) {
       await updateTaskStatus(displayNumber, 'failed', { error: error.message }, taskId);
       taskDetails.delete(displayNumber);
       taskLastHeartbeat.delete(displayNumber);
+      taskStreamLineBuffer.delete(displayNumber);
+      taskActivityState.delete(displayNumber);
+      taskLastStreamProgress.delete(displayNumber);
       updateStatusFile();
     });
 
@@ -1941,6 +2144,9 @@ async function executeTask(task) {
     logError(`Error starting Claude for task #${displayNumber}: ${error.message}`);
     await updateTaskStatus(displayNumber, 'failed', { error: error.message }, taskId);
     taskDetails.delete(displayNumber);
+    taskStreamLineBuffer.delete(displayNumber);
+    taskActivityState.delete(displayNumber);
+    taskLastStreamProgress.delete(displayNumber);
     return null;
   }
 }
@@ -1959,7 +2165,7 @@ async function handleTaskCompletion(displayNumber, exitCode) {
   log(`Task #${displayNumber} completed with code ${exitCode} (${duration}s)`);
 
   // Session ID: prefer pre-assigned ID (reliable), fall back to stdout extraction
-  const sessionId = taskInfo.sessionId || extractSessionIdFromStdout(taskInfo.process, taskStdoutBuffer.get(displayNumber) || []);
+  const sessionId = taskInfo.sessionId || extractSessionIdFromStdout(taskInfo.process, taskStdoutBuffer.get(displayNumber) || [], displayNumber);
   const worktreePath = getWorktreePath(displayNumber, projectPath);
   const durationStr = duration < 60 ? `${duration}s` : `${Math.floor(duration / 60)}m ${duration % 60}s`;
   const machineName = getMachineName() || 'Mac';
@@ -2301,6 +2507,9 @@ async function checkTimeouts() {
     taskStderrBuffer.delete(displayNumber);
     taskProjectPaths.delete(displayNumber);
     taskLastHeartbeat.delete(displayNumber);
+    taskStreamLineBuffer.delete(displayNumber);
+    taskActivityState.delete(displayNumber);
+    taskLastStreamProgress.delete(displayNumber);
     cleanupWorktree(displayNumber, projectPath);
   }
 
