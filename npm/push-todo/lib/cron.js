@@ -301,8 +301,11 @@ export function listJobs() {
  *
  * @param {Object} job - Job object
  * @param {Function} [logFn] - Optional log function
+ * @param {Object} [context] - Injected dependencies from daemon
+ * @param {Function} [context.apiRequest] - API request function
+ * @param {Function} [context.spawnHealthCheck] - Spawn a health check Claude session
  */
-async function executeAction(job, logFn) {
+async function executeAction(job, logFn, context = {}) {
   const log = logFn || (() => {});
 
   switch (job.action.type) {
@@ -312,17 +315,69 @@ async function executeAction(job, logFn) {
       break;
 
     case 'create-todo':
-      // Phase 2: notification-based (no Supabase edge function yet)
-      sendMacNotification('Push: Scheduled Todo', job.action.content || job.name);
-      log(`Cron "${job.name}": todo reminder sent (notification)`);
+      if (context.apiRequest) {
+        try {
+          const response = await context.apiRequest('create-todo', {
+            method: 'POST',
+            body: JSON.stringify({
+              title: job.action.content || job.name,
+              normalizedContent: job.action.detail || null,
+              isBacklog: job.action.backlog || false,
+              createdByClient: 'daemon-cron',
+            }),
+          });
+          if (response.ok) {
+            const data = await response.json();
+            log(`Cron "${job.name}": created todo #${data.todo?.displayNumber || '?'}`);
+          } else {
+            log(`Cron "${job.name}": create-todo failed (HTTP ${response.status})`);
+            // Fall back to notification
+            sendMacNotification('Push: Scheduled Todo', job.action.content || job.name);
+          }
+        } catch (error) {
+          log(`Cron "${job.name}": create-todo error: ${error.message}`);
+          sendMacNotification('Push: Scheduled Todo', job.action.content || job.name);
+        }
+      } else {
+        sendMacNotification('Push: Scheduled Todo', job.action.content || job.name);
+        log(`Cron "${job.name}": todo reminder sent (notification, no API context)`);
+      }
       break;
 
     case 'queue-execution':
-      // Requires todoId — log warning if missing
       if (!job.action.todoId) {
         log(`Cron "${job.name}": queue-execution requires todoId, skipping`);
+      } else if (context.apiRequest) {
+        try {
+          const response = await context.apiRequest('update-task-execution', {
+            method: 'PATCH',
+            body: JSON.stringify({
+              todoId: job.action.todoId,
+              status: 'queued',
+            }),
+          });
+          if (response.ok) {
+            log(`Cron "${job.name}": queued todo ${job.action.todoId} for execution`);
+          } else {
+            log(`Cron "${job.name}": queue-execution failed (HTTP ${response.status})`);
+          }
+        } catch (error) {
+          log(`Cron "${job.name}": queue-execution error: ${error.message}`);
+        }
       } else {
-        log(`Cron "${job.name}": queue-execution for todo ${job.action.todoId} (not yet implemented)`);
+        log(`Cron "${job.name}": queue-execution not available (no API context)`);
+      }
+      break;
+
+    case 'health-check':
+      if (context.spawnHealthCheck) {
+        try {
+          await context.spawnHealthCheck(job, log);
+        } catch (error) {
+          log(`Cron "${job.name}": health-check error: ${error.message}`);
+        }
+      } else {
+        log(`Cron "${job.name}": health-check not available (no daemon context)`);
       }
       break;
 
@@ -336,8 +391,9 @@ async function executeAction(job, logFn) {
  * Called from daemon poll loop on every cycle.
  *
  * @param {Function} [logFn] - Optional log function
+ * @param {Object} [context] - Injected dependencies (apiRequest, spawnHealthCheck)
  */
-export async function checkAndRunDueJobs(logFn) {
+export async function checkAndRunDueJobs(logFn, context = {}) {
   const jobs = loadJobs();
   if (jobs.length === 0) return;
 
@@ -353,7 +409,7 @@ export async function checkAndRunDueJobs(logFn) {
 
     // Job is due — execute
     try {
-      await executeAction(job, logFn);
+      await executeAction(job, logFn, context);
     } catch (error) {
       if (logFn) logFn(`Cron "${job.name}" execution failed: ${error.message}`);
     }

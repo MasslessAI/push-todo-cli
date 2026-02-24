@@ -1514,6 +1514,295 @@ function handleCancellation(displayNumber, source) {
   });
 }
 
+// ==================== Message Injection (Phase 4) ====================
+
+const MESSAGE_POLL_INTERVAL_MS = 30000; // Check for messages every 30s
+let lastMessagePoll = 0;
+
+/**
+ * Poll for urgent messages directed to running tasks.
+ * Called from checkTimeouts() on each poll cycle.
+ *
+ * Normal messages: agent picks up via push-todo --check-messages at natural pauses.
+ * Urgent messages: daemon kills the session and respawns with --continue + injected message.
+ */
+async function checkUrgentMessages() {
+  const now = Date.now();
+  if (now - lastMessagePoll < MESSAGE_POLL_INTERVAL_MS) return;
+  lastMessagePoll = now;
+
+  if (runningTasks.size === 0) return;
+
+  for (const [displayNumber, taskInfo] of runningTasks) {
+    const info = taskDetails.get(displayNumber) || {};
+    const taskId = info.taskId;
+    if (!taskId) continue;
+
+    // Skip tasks already being cancelled or injected
+    if (info.phase === 'cancelled' || info.phase === 'injecting_message') continue;
+
+    try {
+      const params = new URLSearchParams({
+        todo_id: taskId,
+        direction: 'to_agent',
+      });
+
+      const response = await apiRequest(`task-messages?${params}`, {}, false);
+      if (!response.ok) continue;
+
+      const data = await response.json();
+      const messages = data.messages || [];
+
+      // Only process urgent messages via kill+continue
+      const urgentMessages = messages.filter(m => m.is_urgent || m.type === 'urgent');
+      if (urgentMessages.length === 0) continue;
+
+      // Combine all urgent messages into one injection
+      const combinedMessage = urgentMessages
+        .map(m => m.message)
+        .join('\n\n');
+
+      log(`Task #${displayNumber}: ${urgentMessages.length} urgent message(s) detected, initiating kill+continue`);
+
+      // Mark messages as read
+      for (const msg of urgentMessages) {
+        apiRequest('task-messages', {
+          method: 'PATCH',
+          body: JSON.stringify({ message_id: msg.id }),
+        }).catch(() => {}); // fire-and-forget
+      }
+
+      // Kill the current session and respawn with injected message
+      await injectMessageViaKillContinue(displayNumber, combinedMessage);
+    } catch (err) {
+      log(`Task #${displayNumber}: message poll failed (non-fatal): ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Kill the current Claude session and respawn with --continue, injecting a human message.
+ *
+ * Flow:
+ * 1. SIGTERM the running process
+ * 2. Wait for it to exit (handleTaskCompletion sees phase='injecting_message' and skips cleanup)
+ * 3. Respawn with `claude --continue <sessionId> -p "Human sent: <message>"`
+ *
+ * The ~12s penalty is for Claude to reload context from the session transcript.
+ */
+async function injectMessageViaKillContinue(displayNumber, message) {
+  const taskInfo = runningTasks.get(displayNumber);
+  if (!taskInfo) return;
+
+  const sessionId = taskInfo.sessionId;
+  const projectPath = taskInfo.projectPath || taskProjectPaths.get(displayNumber);
+  const info = taskDetails.get(displayNumber) || {};
+  const taskId = info.taskId;
+
+  // Mark phase so handleTaskCompletion knows to respawn instead of cleaning up
+  updateTaskDetail(displayNumber, {
+    phase: 'injecting_message',
+    detail: `Injecting message: ${message.slice(0, 50)}...`
+  });
+
+  // Report the injection event to Supabase
+  apiRequest('update-task-execution', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      todoId: taskId,
+      displayNumber,
+      event: {
+        type: 'message_injected',
+        timestamp: new Date().toISOString(),
+        machineName: getMachineName() || undefined,
+        summary: `Human message injected: ${message.slice(0, 100)}`,
+      }
+    })
+  }).catch(() => {});
+
+  // Store the message for respawn (handleTaskCompletion will read this)
+  taskInfo.pendingInjection = { message, sessionId, projectPath, taskId };
+
+  // Kill the current process
+  try {
+    taskInfo.process.kill('SIGTERM');
+  } catch (err) {
+    log(`Task #${displayNumber}: SIGTERM for injection failed: ${err.message}`);
+    // Reset phase if kill failed
+    updateTaskDetail(displayNumber, { phase: 'executing' });
+    delete taskInfo.pendingInjection;
+  }
+}
+
+/**
+ * Respawn a Claude session after kill, with the human message injected.
+ * Called from handleTaskCompletion when phase === 'injecting_message'.
+ */
+function respawnWithInjectedMessage(displayNumber) {
+  const taskInfo = runningTasks.get(displayNumber);
+  if (!taskInfo || !taskInfo.pendingInjection) {
+    log(`Task #${displayNumber}: no pending injection found, cannot respawn`);
+    return;
+  }
+
+  const { message, sessionId, projectPath, taskId } = taskInfo.pendingInjection;
+  delete taskInfo.pendingInjection;
+
+  const injectionPrompt = `IMPORTANT: The human sent you an urgent message while you were working:\n\n---\n${message}\n---\n\nPlease address this message and then continue with your task.`;
+
+  const allowedTools = [
+    'Read', 'Edit', 'Write', 'Glob', 'Grep',
+    'Bash(git *)',
+    'Bash(npm *)', 'Bash(npx *)', 'Bash(yarn *)',
+    'Bash(python *)', 'Bash(python3 *)', 'Bash(pip *)', 'Bash(pip3 *)',
+    'Bash(push-todo *)',
+    'Task'
+  ].join(',');
+
+  // Generate new session ID for the respawned session
+  const newSessionId = randomUUID();
+
+  const claudeArgs = [
+    '--continue', sessionId,
+    '-p', injectionPrompt,
+    '--allowedTools', allowedTools,
+    '--output-format', 'stream-json',
+    '--permission-mode', 'bypassPermissions',
+    '--session-id', newSessionId,
+  ];
+
+  log(`Task #${displayNumber}: respawning with injected message (session: ${sessionId} -> ${newSessionId})`);
+
+  try {
+    const child = spawn('claude', claudeArgs, {
+      cwd: projectPath || process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: (() => {
+        const env = { ...process.env, PUSH_TASK_ID: taskId, PUSH_DISPLAY_NUMBER: String(displayNumber) };
+        delete env.CLAUDECODE;
+        delete env.CLAUDE_CODE_ENTRYPOINT;
+        return env;
+      })()
+    });
+
+    // Replace the old process info
+    taskInfo.process = child;
+    taskInfo.sessionId = newSessionId;
+    taskInfo.startTime = taskInfo.startTime; // Keep original start time
+
+    // Re-initialize stream parsing state
+    taskStreamLineBuffer.set(displayNumber, '');
+    taskActivityState.set(displayNumber, {
+      filesRead: new Set(), filesEdited: new Set(),
+      currentTool: null, lastText: '', sessionId: null
+    });
+    taskLastStreamProgress.set(displayNumber, Date.now());
+    taskLastOutput.set(displayNumber, Date.now());
+    taskStdoutBuffer.set(displayNumber, []);
+    taskStderrBuffer.set(displayNumber, []);
+    taskLastHeartbeat.set(displayNumber, Date.now());
+
+    // Re-attach stdout handler (same as executeTask)
+    child.stdout.on('data', (data) => {
+      taskLastOutput.set(displayNumber, Date.now());
+
+      const pending = (taskStreamLineBuffer.get(displayNumber) || '') + data.toString();
+      const lines = pending.split('\n');
+      taskStreamLineBuffer.set(displayNumber, lines.pop() || '');
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        const buffer = taskStdoutBuffer.get(displayNumber) || [];
+        buffer.push(line);
+        if (buffer.length > 50) buffer.shift();
+        taskStdoutBuffer.set(displayNumber, buffer);
+
+        const event = parseStreamJsonLine(line);
+        if (event) {
+          processStreamEvent(displayNumber, event);
+        } else {
+          if (line.includes('[push-confirm] Waiting for')) {
+            updateTaskDetail(displayNumber, {
+              phase: 'awaiting_confirmation',
+              detail: 'Waiting for user confirmation on iPhone'
+            });
+          }
+          const stuckReason = checkStuckPatterns(displayNumber, line);
+          if (stuckReason) {
+            log(`Task #${displayNumber} may be stuck: ${stuckReason}`);
+            updateTaskDetail(displayNumber, { phase: 'stuck', detail: `Waiting for input: ${stuckReason}` });
+          }
+        }
+      }
+    });
+
+    child.stderr.on('data', (data) => {
+      const lines = data.toString().split('\n');
+      for (const line of lines) {
+        if (line.trim()) {
+          const buffer = taskStderrBuffer.get(displayNumber) || [];
+          buffer.push(line);
+          if (buffer.length > 20) buffer.shift();
+          taskStderrBuffer.set(displayNumber, buffer);
+        }
+      }
+    });
+
+    child.on('close', (code) => {
+      handleTaskCompletion(displayNumber, code);
+    });
+
+    child.on('error', async (error) => {
+      logError(`Task #${displayNumber} respawn error: ${error.message}`);
+      runningTasks.delete(displayNumber);
+      await updateTaskStatus(displayNumber, 'failed', { error: `Respawn failed: ${error.message}` }, taskId);
+      taskDetails.delete(displayNumber);
+      taskLastHeartbeat.delete(displayNumber);
+      taskStreamLineBuffer.delete(displayNumber);
+      taskActivityState.delete(displayNumber);
+      taskLastStreamProgress.delete(displayNumber);
+      updateStatusFile();
+    });
+
+    updateTaskDetail(displayNumber, {
+      phase: 'executing',
+      detail: 'Resumed with injected message',
+      claudePid: child.pid
+    });
+
+    // Update session ID in Supabase
+    apiRequest('update-task-execution', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        todoId: taskId,
+        displayNumber,
+        sessionId: newSessionId,
+        event: {
+          type: 'progress',
+          timestamp: new Date().toISOString(),
+          machineName: getMachineName() || undefined,
+          summary: `Respawned with injected human message (new session: ${newSessionId.slice(0, 8)})`,
+        }
+      })
+    }).catch(() => {});
+
+    log(`Task #${displayNumber}: respawned successfully (PID: ${child.pid})`);
+  } catch (error) {
+    logError(`Task #${displayNumber}: respawn failed: ${error.message}`);
+    // Clean up — task is effectively dead
+    runningTasks.delete(displayNumber);
+    updateTaskStatus(displayNumber, 'failed', {
+      error: `Message injection respawn failed: ${error.message}`
+    }, taskId).catch(() => {});
+    taskDetails.delete(displayNumber);
+    taskStreamLineBuffer.delete(displayNumber);
+    taskActivityState.delete(displayNumber);
+    taskLastStreamProgress.delete(displayNumber);
+    updateStatusFile();
+  }
+}
+
 function monitorTaskStdout(displayNumber, proc) {
   if (!proc.stdout) return;
 
@@ -2188,10 +2477,19 @@ async function handleTaskCompletion(displayNumber, exitCode) {
   const taskInfo = runningTasks.get(displayNumber);
   if (!taskInfo) return;
 
+  const info = taskDetails.get(displayNumber) || {};
+
+  // Message injection: process was killed to inject a human message.
+  // Don't clean up — respawn with --continue instead.
+  if (info.phase === 'injecting_message' && taskInfo.pendingInjection) {
+    log(`Task #${displayNumber}: process exited for message injection (code ${exitCode}), respawning...`);
+    respawnWithInjectedMessage(displayNumber);
+    return;
+  }
+
   runningTasks.delete(displayNumber);
 
   const duration = Math.floor((Date.now() - taskInfo.startTime) / 1000);
-  const info = taskDetails.get(displayNumber) || {};
   const summary = info.summary || 'Unknown task';
   const projectPath = taskProjectPaths.get(displayNumber);
 
@@ -2502,6 +2800,13 @@ async function checkTimeouts() {
   // Level A: Send progress heartbeats for long-running tasks
   await sendProgressHeartbeats();
 
+  // Phase 4: Check for urgent human messages to inject into running tasks
+  try {
+    await checkUrgentMessages();
+  } catch (error) {
+    logError(`Urgent message check failed (non-fatal): ${error.message}`);
+  }
+
   // Level B: Kill tasks that have been idle too long (fires at 15 min, before 60 min absolute)
   await killIdleTasks();
 
@@ -2684,6 +2989,127 @@ function logVersionParityWarnings() {
   }
 }
 
+// ==================== Health Check (Phase 5) ====================
+
+/**
+ * Spawn a health check Claude session for a project.
+ * Called by the cron module when a health-check job fires.
+ *
+ * The session runs in the project directory with a special prompt that asks
+ * Claude to review the codebase and suggest tasks. Results are created as
+ * draft todos via the create-todo API.
+ *
+ * @param {Object} job - Cron job object
+ * @param {Function} logFn - Log function
+ */
+async function spawnHealthCheck(job, logFn) {
+  const projectPath = job.action.projectPath;
+  if (!projectPath || !existsSync(projectPath)) {
+    logFn(`Health check: project path not found: ${projectPath}`);
+    return;
+  }
+
+  // Don't run if task slots are full
+  if (runningTasks.size >= MAX_CONCURRENT_TASKS) {
+    logFn(`Health check: all ${MAX_CONCURRENT_TASKS} slots in use, deferring`);
+    return;
+  }
+
+  const scope = job.action.scope || 'general';
+  const customPrompt = job.action.prompt || '';
+
+  const healthPrompts = {
+    general: `Review this codebase briefly. Check for:
+1. Failing tests (run the test suite if one exists)
+2. Obvious bugs or issues in recently modified files (last 7 days)
+3. Outdated dependencies worth updating
+
+For each issue found, create a todo using: push-todo create "<clear description of the issue>"
+Only create todos for real, actionable issues — not style preferences or minor improvements.
+If everything looks good, just say "No issues found" and don't create any todos.`,
+    tests: `Run the test suite for this project. If any tests fail, create a todo for each failure:
+push-todo create "Fix failing test: <test name> - <brief reason>"
+If all tests pass, say "All tests pass" and don't create any todos.`,
+    dependencies: `Check for outdated dependencies in this project. Only flag dependencies with:
+- Known security vulnerabilities
+- Major version bumps (not minor/patch)
+For each, create a todo: push-todo create "Update <dep> from <old> to <new> (<reason>)"
+If dependencies are current, say "All dependencies up to date."`,
+  };
+
+  const prompt = customPrompt || healthPrompts[scope] || healthPrompts.general;
+
+  const allowedTools = [
+    'Read', 'Glob', 'Grep',
+    'Bash(git *)',
+    'Bash(npm *)', 'Bash(npx *)',
+    'Bash(python *)', 'Bash(python3 *)',
+    'Bash(push-todo create *)',
+  ].join(',');
+
+  const claudeArgs = [
+    '-p', prompt,
+    '--allowedTools', allowedTools,
+    '--output-format', 'stream-json',
+    '--permission-mode', 'bypassPermissions',
+  ];
+
+  logFn(`Health check "${job.name}": spawning Claude in ${projectPath} (scope: ${scope})`);
+
+  try {
+    const child = spawn('claude', claudeArgs, {
+      cwd: projectPath,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: (() => {
+        const env = { ...process.env };
+        delete env.CLAUDECODE;
+        delete env.CLAUDE_CODE_ENTRYPOINT;
+        return env;
+      })(),
+      timeout: 300000, // 5 min max for health checks
+    });
+
+    // Simple output tracking — health checks are lightweight, no full task tracking
+    let output = '';
+    child.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    child.stderr.on('data', (data) => {
+      const errLine = data.toString().trim();
+      if (errLine) logFn(`Health check "${job.name}" stderr: ${errLine}`);
+    });
+
+    await new Promise((resolve) => {
+      child.on('close', (code) => {
+        if (code === 0) {
+          logFn(`Health check "${job.name}": completed successfully`);
+        } else {
+          logFn(`Health check "${job.name}": exited with code ${code}`);
+        }
+        resolve();
+      });
+      child.on('error', (err) => {
+        logFn(`Health check "${job.name}": spawn error: ${err.message}`);
+        resolve();
+      });
+    });
+
+    // Extract any text summary from stream-json output
+    const lines = output.split('\n').filter(l => l.trim());
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        if (event.type === 'result' && event.result) {
+          logFn(`Health check "${job.name}" result: ${event.result.slice(0, 200)}`);
+        }
+      } catch { /* ignore non-JSON lines */ }
+    }
+  } catch (error) {
+    logFn(`Health check "${job.name}": error: ${error.message}`);
+  }
+}
+
 // ==================== Main Loop ====================
 
 async function pollAndExecute() {
@@ -2845,7 +3271,7 @@ async function mainLoop() {
 
       // Cron jobs (check every poll cycle, execution throttled by nextRunAt)
       try {
-        await checkAndRunDueJobs(log);
+        await checkAndRunDueJobs(log, { apiRequest, spawnHealthCheck });
       } catch (error) {
         logError(`Cron check error: ${error.message}`);
       }

@@ -121,6 +121,7 @@ ${bold('CRON (scheduled jobs):')}
     --cron <expression>            5-field cron expression
     --notify <message>             Send Mac notification
     --create-todo <content>        Create todo reminder
+    --health-check <path>          Run codebase health check (scope: general|tests|deps)
   push-todo cron list              List all cron jobs
   push-todo cron remove <id>       Remove a cron job by ID
 
@@ -182,6 +183,8 @@ const options = {
   'create-todo': { type: 'string' },
   'notify': { type: 'string' },
   'queue-execution': { type: 'string' },
+  'health-check': { type: 'string' },
+  'scope': { type: 'string' },
   // Skill CLI options (Phase 3)
   'report-progress': { type: 'string' },
   'phase': { type: 'string' },
@@ -688,8 +691,14 @@ export async function run(argv) {
         action = { type: 'notify', content: values.notify };
       } else if (values['queue-execution']) {
         action = { type: 'queue-execution', todoId: values['queue-execution'] };
+      } else if (values['health-check']) {
+        action = {
+          type: 'health-check',
+          projectPath: values['health-check'],
+          scope: values.scope || 'general',
+        };
       } else {
-        console.error(red('Action required: --create-todo, --notify, or --queue-execution'));
+        console.error(red('Action required: --create-todo, --notify, --queue-execution, or --health-check'));
         process.exit(1);
       }
 
