@@ -1482,8 +1482,35 @@ function maybesSendStreamProgress(displayNumber, activity) {
         filesRead: activity.filesRead.size
       }
     })
+  }).then(async (response) => {
+    // Check for cancellation signal in response
+    const result = await response.json().catch(() => null);
+    if (result?.status === 'cancelling') {
+      handleCancellation(displayNumber, 'stream_progress');
+    }
   }).catch(err => {
     log(`Task #${displayNumber}: stream progress failed (non-fatal): ${err.message}`);
+  });
+}
+
+// ==================== Cancellation (Phase 2) ====================
+
+function handleCancellation(displayNumber, source) {
+  const taskInfo = runningTasks.get(displayNumber);
+  if (!taskInfo) return;
+
+  log(`Task #${displayNumber}: cancellation detected via ${source}, sending SIGTERM`);
+
+  try {
+    taskInfo.process.kill('SIGTERM');
+  } catch (err) {
+    log(`Task #${displayNumber}: SIGTERM failed: ${err.message}`);
+  }
+
+  // Mark as cancelled so handleTaskCompletion reports the right reason
+  updateTaskDetail(displayNumber, {
+    phase: 'cancelled',
+    detail: 'Cancelled by user'
   });
 }
 
@@ -1623,6 +1650,12 @@ async function sendProgressHeartbeats() {
         }
         // No status field — event-only update, won't change execution_status
       })
+    }).then(async (response) => {
+      // Check for cancellation signal in heartbeat response
+      const result = await response.json().catch(() => null);
+      if (result?.status === 'cancelling') {
+        handleCancellation(displayNumber, 'heartbeat');
+      }
     }).catch(err => {
       log(`Task #${displayNumber}: heartbeat failed (non-fatal): ${err.message}`);
     });
@@ -2162,12 +2195,45 @@ async function handleTaskCompletion(displayNumber, exitCode) {
   const summary = info.summary || 'Unknown task';
   const projectPath = taskProjectPaths.get(displayNumber);
 
-  log(`Task #${displayNumber} completed with code ${exitCode} (${duration}s)`);
+  const durationStr = duration < 60 ? `${duration}s` : `${Math.floor(duration / 60)}m ${duration % 60}s`;
+  const wasCancelled = info.phase === 'cancelled';
+  log(`Task #${displayNumber} ${wasCancelled ? 'cancelled' : 'completed'} with code ${exitCode} (${duration}s)`);
+
+  // Handle user cancellation — report as failed with clear reason, skip PR/merge/summary
+  if (wasCancelled) {
+    const cancelMsg = `Cancelled by user after ${durationStr}.`;
+    await updateTaskStatus(displayNumber, 'failed', {
+      error: cancelMsg,
+      sessionId: taskInfo.sessionId
+    }, info.taskId);
+
+    cleanupWorktree(displayNumber, projectPath);
+
+    trackCompleted({
+      displayNumber,
+      summary,
+      completedAt: new Date().toISOString(),
+      duration,
+      status: 'cancelled'
+    });
+
+    // Cleanup internal tracking
+    taskDetails.delete(displayNumber);
+    taskLastOutput.delete(displayNumber);
+    taskStdoutBuffer.delete(displayNumber);
+    taskStderrBuffer.delete(displayNumber);
+    taskProjectPaths.delete(displayNumber);
+    taskLastHeartbeat.delete(displayNumber);
+    taskStreamLineBuffer.delete(displayNumber);
+    taskActivityState.delete(displayNumber);
+    taskLastStreamProgress.delete(displayNumber);
+    updateStatusFile();
+    return;
+  }
 
   // Session ID: prefer pre-assigned ID (reliable), fall back to stdout extraction
   const sessionId = taskInfo.sessionId || extractSessionIdFromStdout(taskInfo.process, taskStdoutBuffer.get(displayNumber) || [], displayNumber);
   const worktreePath = getWorktreePath(displayNumber, projectPath);
-  const durationStr = duration < 60 ? `${duration}s` : `${Math.floor(duration / 60)}m ${duration % 60}s`;
   const machineName = getMachineName() || 'Mac';
 
   if (sessionId) {
