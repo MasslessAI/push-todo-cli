@@ -381,4 +381,144 @@ export async function learnVocabulary(todoId, keywords) {
   return response.json();
 }
 
+// ==================== Phase 3: Extended Skill CLI ====================
+
+/**
+ * Report structured progress for a running task.
+ * Called by the agent during execution to push activity updates to Supabase.
+ *
+ * @param {string} todoId - UUID of the task
+ * @param {Object} options - Progress details
+ * @param {string} options.phase - Current phase (e.g., "testing", "implementing")
+ * @param {string} [options.detail] - Human-readable detail
+ * @returns {Promise<Object>}
+ */
+export async function reportProgress(todoId, { phase, detail }) {
+  const response = await apiRequest('update-task-execution', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      todoId,
+      event: {
+        type: 'progress',
+        timestamp: new Date().toISOString(),
+        summary: detail ? `${phase}: ${detail}` : phase,
+        phase
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to report progress: ${text}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Update execution status/phase for a running task.
+ *
+ * @param {string} todoId - UUID of the task
+ * @param {string} status - New phase label (e.g., "implementing", "testing", "reviewing")
+ * @returns {Promise<Object>}
+ */
+export async function updateStatus(todoId, status) {
+  const response = await apiRequest('update-task-execution', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      todoId,
+      event: {
+        type: 'progress',
+        timestamp: new Date().toISOString(),
+        summary: `Phase: ${status}`
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to update status: ${text}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Check for messages from the human for a running task.
+ * Returns pending messages or empty array.
+ *
+ * @param {string} todoId - UUID of the task
+ * @returns {Promise<Object[]>} Array of pending messages
+ */
+export async function checkMessages(todoId) {
+  const params = new URLSearchParams({ todo_id: todoId, direction: 'to_agent' });
+  const response = await apiRequest(`task-messages?${params}`, {
+    method: 'GET'
+  });
+
+  if (!response.ok) {
+    // 404 = no task_messages table/function yet — return empty gracefully
+    if (response.status === 404) return [];
+    const text = await response.text();
+    throw new Error(`Failed to check messages: ${text}`);
+  }
+
+  const result = await response.json();
+  return result.messages || [];
+}
+
+/**
+ * Request input from the human for a running task.
+ * Posts a question and polls until the human responds or timeout.
+ *
+ * @param {string} todoId - UUID of the task
+ * @param {string} question - Question to ask the human
+ * @param {number} [timeoutMs=300000] - Timeout in ms (default 5 min)
+ * @returns {Promise<string|null>} Human's response or null if timeout
+ */
+export async function requestInput(todoId, question, timeoutMs = 300000) {
+  // Post the question
+  const postResponse = await apiRequest('task-messages', {
+    method: 'POST',
+    body: JSON.stringify({
+      todo_id: todoId,
+      direction: 'to_human',
+      message: question,
+      type: 'input_request'
+    })
+  });
+
+  if (!postResponse.ok) {
+    // 404 = task-messages endpoint not deployed yet
+    if (postResponse.status === 404) {
+      console.error('Message system not available yet. Use [push-confirm] pattern instead.');
+      return null;
+    }
+    const text = await postResponse.text();
+    throw new Error(`Failed to request input: ${text}`);
+  }
+
+  const { message_id } = await postResponse.json();
+
+  // Poll for response
+  const startTime = Date.now();
+  const pollInterval = 5000; // 5s
+
+  while (Date.now() - startTime < timeoutMs) {
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+    const checkResponse = await apiRequest(`task-messages?message_id=${message_id}&direction=to_agent`, {
+      method: 'GET'
+    });
+
+    if (checkResponse.ok) {
+      const result = await checkResponse.json();
+      const reply = (result.messages || []).find(m => m.in_reply_to === message_id);
+      if (reply) return reply.message;
+    }
+  }
+
+  return null; // Timeout
+}
+
 export { API_BASE };

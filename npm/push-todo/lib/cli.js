@@ -68,6 +68,13 @@ ${bold('OPTIONS:')}
   --view-screenshot <idx>          Open screenshot for viewing (index or filename)
   --learn-vocabulary <uuid>        Contribute vocabulary for a task
   --keywords <terms>               Comma-separated vocabulary terms (with --learn-vocabulary)
+  --report-progress <uuid>         Report progress for a running task
+  --phase <name>                   Phase name (with --report-progress)
+  --detail <text>                  Detail text (with --report-progress)
+  --update-status <uuid>           Update execution phase for a running task
+  --check-messages <uuid>          Check for messages from the human
+  --request-input <uuid>           Request input from the human (blocking)
+  --question <text>                Question to ask (with --request-input)
   --set-batch-size <N>             Set max tasks for batch queue (1-20)
   --daemon-status                  Show daemon status
   --daemon-start                   Start daemon manually
@@ -175,6 +182,14 @@ const options = {
   'create-todo': { type: 'string' },
   'notify': { type: 'string' },
   'queue-execution': { type: 'string' },
+  // Skill CLI options (Phase 3)
+  'report-progress': { type: 'string' },
+  'phase': { type: 'string' },
+  'detail': { type: 'string' },
+  'update-status': { type: 'string' },
+  'check-messages': { type: 'string' },
+  'request-input': { type: 'string' },
+  'question': { type: 'string' },
 };
 
 /**
@@ -507,6 +522,91 @@ export async function run(argv) {
       }
     } catch (error) {
       console.error(red(`Failed to learn vocabulary: ${error.message}`));
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Handle --report-progress (report structured progress for a running task)
+  if (values['report-progress']) {
+    try {
+      const result = await api.reportProgress(values['report-progress'], {
+        phase: values.phase || 'progress',
+        detail: values.detail || undefined,
+      });
+      if (values.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(green('Progress reported.'));
+      }
+    } catch (error) {
+      console.error(red(`Failed to report progress: ${error.message}`));
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Handle --update-status (update execution phase for a running task)
+  if (values['update-status']) {
+    const status = positionals[0] || values.phase;
+    if (!status) {
+      console.error(red('Status required. Usage: --update-status <uuid> <status>'));
+      process.exit(1);
+    }
+    try {
+      const result = await api.updateStatus(values['update-status'], status);
+      if (values.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(green(`Status updated to: ${status}`));
+      }
+    } catch (error) {
+      console.error(red(`Failed to update status: ${error.message}`));
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Handle --check-messages (check for messages from the human)
+  if (values['check-messages']) {
+    try {
+      const messages = await api.checkMessages(values['check-messages']);
+      if (values.json) {
+        console.log(JSON.stringify(messages, null, 2));
+      } else if (messages.length === 0) {
+        console.log(dim('No pending messages.'));
+      } else {
+        for (const msg of messages) {
+          console.log(`[${msg.created_at || 'unknown'}] ${msg.message}`);
+        }
+      }
+    } catch (error) {
+      console.error(red(`Failed to check messages: ${error.message}`));
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Handle --request-input (ask the human a question, poll for response)
+  if (values['request-input']) {
+    const question = values.question || positionals.slice(0).join(' ');
+    if (!question) {
+      console.error(red('--question required with --request-input'));
+      console.error('Usage: --request-input <uuid> --question "What should I do?"');
+      process.exit(1);
+    }
+    try {
+      console.log(dim('Waiting for human response (timeout: 5 min)...'));
+      const reply = await api.requestInput(values['request-input'], question);
+      if (values.json) {
+        console.log(JSON.stringify({ reply }, null, 2));
+      } else if (reply) {
+        console.log(green('Response:'), reply);
+      } else {
+        console.log(dim('No response received (timeout).'));
+      }
+    } catch (error) {
+      console.error(red(`Failed to request input: ${error.message}`));
       process.exit(1);
     }
     return;
