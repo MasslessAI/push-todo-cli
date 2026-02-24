@@ -25,6 +25,8 @@ import { getProjectContext, buildSmartPrompt, invalidateCache } from './context-
 import { sendMacNotification } from './utils/notify.js';
 import { checkAndRunDueJobs } from './cron.js';
 import { runHeartbeatChecks } from './heartbeat.js';
+import { getAgentVersions, formatAgentVersionSummary } from './agent-versions.js';
+import { checkAllProjectsFreshness } from './project-freshness.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2243,6 +2245,8 @@ async function mainLoop() {
   log(`Auto-update: ${getAutoUpdateEnabled() ? 'Enabled' : 'Disabled'}`);
   const caps = getCapabilities();
   log(`Capabilities: gh=${caps.gh_cli}, auto-merge=${caps.auto_merge}, auto-complete=${caps.auto_complete}`);
+  const agentVersions = getAgentVersions({ force: true });
+  log(`Agent versions: ${formatAgentVersionSummary(agentVersions)}`);
   log(`Log file: ${LOG_FILE}`);
 
   // Show registered projects
@@ -2311,6 +2315,30 @@ async function mainLoop() {
         });
       } catch (error) {
         logError(`Heartbeat error: ${error.message}`);
+      }
+
+      // Project freshness check (internally throttled to once per hour)
+      try {
+        const projects = getListedProjects();
+        const busyPaths = new Set();
+        for (const [, info] of runningTasks) {
+          if (info.projectPath) busyPaths.add(info.projectPath);
+        }
+        checkAllProjectsFreshness({
+          projects,
+          autoRebase: getAutoUpdateEnabled(),
+          busyPaths,
+          log,
+        });
+      } catch (error) {
+        logError(`Freshness check error: ${error.message}`);
+      }
+
+      // Agent version check (internally throttled to once per hour)
+      try {
+        getAgentVersions();
+      } catch (error) {
+        logError(`Agent version check error: ${error.message}`);
       }
 
       // Self-update check (throttled to once per hour, only applies when idle)

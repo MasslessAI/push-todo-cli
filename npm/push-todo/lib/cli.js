@@ -47,6 +47,7 @@ ${bold('USAGE:')}
   push-todo connect                Run connection doctor
   push-todo search <query>         Search tasks
   push-todo review                 Review completed tasks
+  push-todo update                 Update CLI, check agents, refresh projects
 
 ${bold('OPTIONS:')}
   --all-projects, -a               List tasks from all projects
@@ -653,6 +654,12 @@ export async function run(argv) {
       return runAutoConnect(values);
     }
     return runConnect(values);
+  }
+
+  // Update command - manual update of CLI, agents, and project freshness
+  if (command === 'update') {
+    const { runManualUpdate } = await import('./update.js');
+    return runManualUpdate(values);
   }
 
   // Review command

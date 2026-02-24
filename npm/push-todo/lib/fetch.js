@@ -12,6 +12,7 @@ import { formatTaskForDisplay, formatSearchResult } from './utils/format.js';
 import { bold, green, yellow, red, cyan, dim, muted } from './utils/colors.js';
 import { decryptTodoField, isE2EEAvailable } from './encryption.js';
 import { getAutoCommitEnabled, getAutoMergeEnabled, getAutoCompleteEnabled, getAutoUpdateEnabled, getMaxBatchSize } from './config.js';
+import { getAgentVersions } from './agent-versions.js';
 import { writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -445,6 +446,26 @@ export async function showStatus(options = {}) {
   console.log(`${bold('Auto-update:')} ${autoUpdate ? 'Enabled' : 'Disabled'}`);
   console.log(`${bold('Max batch size:')} ${maxBatch}`);
   console.log(`${bold('Registered projects:')} ${status.registeredProjects}`);
+  console.log('');
+
+  // Agent versions
+  const agentVersions = getAgentVersions();
+  console.log(bold('Agent Versions:'));
+  const agentLabels = {
+    'claude-code': 'Claude Code',
+    'openai-codex': 'Codex',
+    'openclaw': 'OpenClaw',
+  };
+  for (const [type, info] of Object.entries(agentVersions)) {
+    const label = agentLabels[type] || type;
+    if (info.installed && info.version) {
+      console.log(`  ${bold(label + ':')} ${green('v' + info.version)}`);
+    } else if (info.installed) {
+      console.log(`  ${bold(label + ':')} ${yellow('installed (unknown version)')}`);
+    } else {
+      console.log(`  ${bold(label + ':')} ${dim('not installed')}`);
+    }
+  }
 }
 
 /**
