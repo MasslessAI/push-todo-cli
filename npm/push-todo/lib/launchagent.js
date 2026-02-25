@@ -103,13 +103,13 @@ export function getStatus() {
 
   if (installed) {
     try {
-      const output = execFileSync('launchctl', ['list', LABEL], {
-        encoding: 'utf8',
+      execFileSync('launchctl', ['list', LABEL], {
         timeout: 5000,
+        stdio: ['ignore', 'pipe', 'ignore'], // capture stdout, suppress stderr
       });
-      loaded = !output.includes('Could not find service');
+      loaded = true; // If no error thrown, service exists
     } catch {
-      loaded = false;
+      loaded = false; // launchctl exits non-zero if service not found
     }
   }
 
@@ -135,11 +135,11 @@ export function install() {
     if (existsSync(PLIST_PATH)) {
       const existing = readFileSync(PLIST_PATH, 'utf8');
       if (existing === newContent) {
-        // Ensure loaded
+        // Ensure loaded (suppress stderr — already-loaded plist emits noise)
         try {
           execFileSync('launchctl', ['load', '-w', PLIST_PATH], {
-            encoding: 'utf8',
             timeout: 5000,
+            stdio: ['ignore', 'ignore', 'ignore'],
           });
         } catch {}
         return { success: true, message: 'LaunchAgent already installed', alreadyInstalled: true };
@@ -148,8 +148,8 @@ export function install() {
       // Content changed (e.g., node path updated) — unload old, write new
       try {
         execFileSync('launchctl', ['unload', PLIST_PATH], {
-          encoding: 'utf8',
           timeout: 5000,
+          stdio: ['ignore', 'ignore', 'ignore'],
         });
       } catch {}
     }
@@ -159,8 +159,8 @@ export function install() {
 
     // Load it
     execFileSync('launchctl', ['load', '-w', PLIST_PATH], {
-      encoding: 'utf8',
       timeout: 5000,
+      stdio: ['ignore', 'ignore', 'ignore'],
     });
 
     return { success: true, message: 'LaunchAgent installed and loaded' };
@@ -183,8 +183,8 @@ export function uninstall() {
     // Unload
     try {
       execFileSync('launchctl', ['unload', PLIST_PATH], {
-        encoding: 'utf8',
         timeout: 5000,
+        stdio: ['ignore', 'ignore', 'ignore'],
       });
     } catch {}
 
