@@ -394,6 +394,18 @@ function detectCapabilities() {
 
   caps.project_skills = discoverProjectSkills();
 
+  // Agent CLI versions (claude-code, openai-codex, openclaw)
+  const agentVersions = getAgentVersions();
+  const versions = {};
+  for (const [type, info] of Object.entries(agentVersions)) {
+    if (info.installed && info.version) {
+      versions[type] = info.version;
+    }
+  }
+  if (Object.keys(versions).length > 0) {
+    caps.agent_versions = versions;
+  }
+
   return caps;
 }
 
