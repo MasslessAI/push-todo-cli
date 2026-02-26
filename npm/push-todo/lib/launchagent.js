@@ -68,7 +68,7 @@ function generatePlist() {
         <key>PUSH_DAEMON</key>
         <string>1</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:${dirname(nodeBin)}</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:${dirname(nodeBin)}:${join(homedir(), '.local', 'bin')}</string>
     </dict>
 
     <key>RunAtLoad</key>

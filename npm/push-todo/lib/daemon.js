@@ -91,6 +91,7 @@ const LOG_FILE = join(PUSH_DIR, 'daemon.log');
 const STATUS_FILE = join(PUSH_DIR, 'daemon_status.json');
 const VERSION_FILE = join(PUSH_DIR, 'daemon.version');
 const LOCK_FILE = join(PUSH_DIR, 'daemon.lock');
+const COMPLETED_FILE = join(PUSH_DIR, 'completed_tasks.json');
 const CONFIG_FILE = join(CONFIG_DIR, 'config');
 const MACHINE_ID_FILE = join(CONFIG_DIR, 'machine_id');
 const REGISTRY_FILE = join(CONFIG_DIR, 'projects.json');
@@ -110,6 +111,25 @@ function trackCompleted(entry) {
   if (completedToday.length > COMPLETED_TODAY_MAX) {
     completedToday.splice(0, completedToday.length - COMPLETED_TODAY_MAX);
   }
+  // Persist to disk so new daemon instances skip already-completed tasks
+  try {
+    writeFileSync(COMPLETED_FILE, JSON.stringify(completedToday));
+  } catch {}
+}
+
+function loadCompletedTasks() {
+  try {
+    if (!existsSync(COMPLETED_FILE)) return;
+    const data = JSON.parse(readFileSync(COMPLETED_FILE, 'utf8'));
+    if (!Array.isArray(data)) return;
+    // Only load entries from the last 24 hours
+    const cutoff = Date.now() - 86400000;
+    for (const entry of data) {
+      if (entry.completedAt && new Date(entry.completedAt).getTime() > cutoff) {
+        completedToday.push(entry);
+      }
+    }
+  } catch {}
 }
 const taskLastOutput = new Map(); // displayNumber -> timestamp
 const taskStdoutBuffer = new Map(); // displayNumber -> lines[]
@@ -886,6 +906,16 @@ function createPRForTask(displayNumber, summary, projectPath) {
   const gitCwd = projectPath || process.cwd();
 
   try {
+    // Verify branch exists before comparing (worktree may have been auto-cleaned)
+    try {
+      execFileSync('git', ['rev-parse', '--verify', branch], {
+        cwd: gitCwd, timeout: 5000, stdio: 'pipe'
+      });
+    } catch {
+      log(`Branch ${branch} does not exist, skipping PR creation`);
+      return null;
+    }
+
     // Check if branch has commits
     const logResult = execSync(`git log HEAD..${branch} --oneline`, {
       cwd: gitCwd,
@@ -1667,6 +1697,7 @@ function respawnWithInjectedMessage(displayNumber) {
     '--continue', sessionId,
     '-p', injectionPrompt,
     '--verbose',
+    '--worktree', getWorktreeName(displayNumber),
     '--allowedTools', allowedTools,
     '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions',
@@ -2332,6 +2363,7 @@ async function executeTask(task) {
         '--continue', previousSessionId,
         '-p', prompt,
         '--verbose',
+        '--worktree', worktreeName,
         '--allowedTools', allowedTools,
         '--output-format', 'stream-json',
         '--permission-mode', 'bypassPermissions',
@@ -2340,6 +2372,7 @@ async function executeTask(task) {
     : [
         '-p', prompt,
         '--verbose',
+        '--worktree', worktreeName,
         '--allowedTools', allowedTools,
         '--output-format', 'stream-json',
         '--permission-mode', 'bypassPermissions',
@@ -3200,6 +3233,14 @@ async function recoverOrphanedTasks() {
     for (const task of orphaned) {
       const dn = task.displayNumber || task.display_number;
       const tid = task.id || task.todo_id || null;
+
+      // Skip tasks already completed by the previous daemon instance
+      // (race condition: API may return stale 'running' status after session_finished update)
+      if (completedToday.some(c => c.displayNumber === dn)) {
+        log(`Task #${dn}: skipping orphan recovery — already completed by previous daemon`);
+        continue;
+      }
+
       log(`Task #${dn}: resetting from 'running' to 'queued' (orphaned by restart)`);
       await updateTaskStatus(dn, 'queued', {
         event: {
@@ -3258,6 +3299,9 @@ async function mainLoop() {
   try {
     writeFileSync(VERSION_FILE, getVersion());
   } catch {}
+
+  // Load completed tasks from previous daemon instance (prevents re-execution)
+  loadCompletedTasks();
 
   // Recover orphaned tasks from previous daemon instance
   // When the daemon restarts (self-update, crash, reboot), tasks may be stuck
