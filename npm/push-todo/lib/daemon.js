@@ -25,7 +25,7 @@ import { getProjectContext, buildSmartPrompt, invalidateCache } from './context-
 import { sendMacNotification } from './utils/notify.js';
 import { checkAndRunDueJobs } from './cron.js';
 import { runHeartbeatChecks } from './heartbeat.js';
-import { getAgentVersions, formatAgentVersionSummary, checkAllAgentUpdates, performAgentUpdate, checkVersionParity } from './agent-versions.js';
+import { getAgentVersions, formatAgentVersionSummary, checkAllAgentUpdates, performAgentUpdate, checkVersionParity, ensureAgentReady } from './agent-versions.js';
 import { checkAllProjectsFreshness } from './project-freshness.js';
 import { getStatus as getLaunchAgentStatus, install as refreshLaunchAgent } from './launchagent.js';
 
@@ -2259,6 +2259,17 @@ async function executeTask(task) {
     }
 
     log(`Task #${displayNumber}: Project ${gitRemote} -> ${projectPath}`);
+  }
+
+  // Pre-flight: verify agent CLI meets minimum version (attempts auto-update if not)
+  const agentType = taskActionType || 'claude-code';
+  const readiness = ensureAgentReady(agentType);
+  if (!readiness.ok) {
+    logError(`Task #${displayNumber}: ${readiness.error}`);
+    await updateTaskStatus(displayNumber, 'failed', {
+      error: readiness.error
+    }, taskId);
+    return null;
   }
 
   // Pre-assign session ID so we can store it at claim time (not rely on parsing stdout)

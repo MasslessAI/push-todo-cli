@@ -279,6 +279,8 @@ export function checkForAgentUpdate(agentType) {
 
 /**
  * Install a specific version of an agent CLI globally.
+ * For claude-code: tries npm first, falls back to `claude update` which
+ * handles non-npm installations (brew, app installer, happy-coder wrapper).
  *
  * @param {string} agentType
  * @param {string} targetVersion
@@ -288,6 +290,7 @@ export function performAgentUpdate(agentType, targetVersion) {
   const agent = AGENTS[agentType];
   if (!agent?.npmPackage) return false;
 
+  // Try npm install first (works for standard npm global installs)
   try {
     execFileSync('npm', ['install', '-g', `${agent.npmPackage}@${targetVersion}`], {
       timeout: 120000,
@@ -295,8 +298,29 @@ export function performAgentUpdate(agentType, targetVersion) {
     });
     return true;
   } catch {
-    return false;
+    // npm failed — fall through to agent-specific fallbacks
   }
+
+  // Fallback: use the agent's own update command (handles non-npm installs)
+  if (agentType === 'claude-code') {
+    try {
+      const env = { ...process.env };
+      delete env.CLAUDECODE;
+      delete env.CLAUDE_CODE_ENTRYPOINT;
+      execFileSync('claude', ['update'], {
+        timeout: 120000,
+        stdio: 'pipe',
+        env,
+      });
+      // Verify the update actually worked
+      const after = detectAgentVersion('claude-code');
+      return after.installed && after.version != null;
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -331,6 +355,51 @@ export function checkAllAgentUpdates({ force = false } = {}) {
     }
   }
   return results;
+}
+
+/**
+ * Pre-flight check: verify an agent meets minimum version before task execution.
+ * If below minimum, attempts an immediate update and rechecks.
+ *
+ * @param {string} agentType
+ * @returns {{ ok: boolean, version: string|null, error: string|null }}
+ */
+export function ensureAgentReady(agentType) {
+  const agent = AGENTS[agentType];
+  if (!agent) {
+    return { ok: false, version: null, error: `Unknown agent type: ${agentType}` };
+  }
+
+  const info = detectAgentVersion(agentType);
+  if (!info.installed) {
+    return { ok: false, version: null, error: `${agentType} CLI not found` };
+  }
+  if (!info.version) {
+    return { ok: false, version: null, error: `${agentType} installed but version unknown` };
+  }
+
+  // Check minimum version
+  if (agent.minVersion && compareSemver(info.version, agent.minVersion) < 0) {
+    // Attempt immediate update
+    const latest = fetchLatestAgentVersion(agentType);
+    if (latest?.version) {
+      const updated = performAgentUpdate(agentType, latest.version);
+      if (updated) {
+        // Recheck after update
+        const after = detectAgentVersion(agentType);
+        if (after.version && compareSemver(after.version, agent.minVersion) >= 0) {
+          return { ok: true, version: after.version, error: null };
+        }
+      }
+    }
+    return {
+      ok: false,
+      version: info.version,
+      error: `${agentType} v${info.version} is below minimum v${agent.minVersion} (needs --worktree support). Update with: claude update`,
+    };
+  }
+
+  return { ok: true, version: info.version, error: null };
 }
 
 // ==================== Version Parity ====================
