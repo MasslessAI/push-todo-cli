@@ -1666,6 +1666,7 @@ function respawnWithInjectedMessage(displayNumber) {
   const claudeArgs = [
     '--continue', sessionId,
     '-p', injectionPrompt,
+    '--verbose',
     '--allowedTools', allowedTools,
     '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions',
@@ -2330,6 +2331,7 @@ async function executeTask(task) {
     ? [
         '--continue', previousSessionId,
         '-p', prompt,
+        '--verbose',
         '--allowedTools', allowedTools,
         '--output-format', 'stream-json',
         '--permission-mode', 'bypassPermissions',
@@ -2337,6 +2339,7 @@ async function executeTask(task) {
       ]
     : [
         '-p', prompt,
+        '--verbose',
         '--allowedTools', allowedTools,
         '--output-format', 'stream-json',
         '--permission-mode', 'bypassPermissions',
@@ -3059,6 +3062,7 @@ If dependencies are current, say "All dependencies up to date."`,
 
   const claudeArgs = [
     '-p', prompt,
+    '--verbose',
     '--allowedTools', allowedTools,
     '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions',
