@@ -18,8 +18,8 @@ const PUSH_DIR = join(homedir(), '.push');
 const VERSIONS_CACHE_FILE = join(PUSH_DIR, 'agent_versions.json');
 const LAST_AGENT_UPDATE_FILE = join(PUSH_DIR, 'last_agent_update_check');
 const CHECK_INTERVAL = 3600000; // 1 hour
-const AGENT_UPDATE_CHECK_INTERVAL = 3600000; // 1 hour
-const AGENT_VERSION_AGE_GATE = 3600000; // 1 hour — only install versions >1hr old
+const AGENT_UPDATE_CHECK_INTERVAL = 1800000; // 30 minutes
+const AGENT_VERSION_AGE_GATE = 1800000; // 30 minutes — only install versions >30min old
 
 // ==================== Agent Definitions ====================
 

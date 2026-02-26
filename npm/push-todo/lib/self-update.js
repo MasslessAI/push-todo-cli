@@ -2,8 +2,8 @@
  * Self-update module for Push daemon.
  *
  * Checks npm registry for newer versions and auto-updates.
- * Safety: Only updates to versions published >1 hour ago.
- * Throttle: Checks at most once per hour.
+ * Safety: Only updates to versions published >30 minutes ago.
+ * Throttle: Checks at most once per 30 minutes.
  * Config: PUSH_AUTO_UPDATE (default true)
  */
 
@@ -14,7 +14,7 @@ import { join } from 'path';
 
 const PUSH_DIR = join(homedir(), '.push');
 const LAST_UPDATE_CHECK_FILE = join(PUSH_DIR, 'last_update_check');
-const UPDATE_CHECK_INTERVAL = 3600000; // 1 hour
+const UPDATE_CHECK_INTERVAL = 1800000; // 30 minutes
 
 /**
  * Compare semver strings (strips pre-release/build metadata before comparing).
