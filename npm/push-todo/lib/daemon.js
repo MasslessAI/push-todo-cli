@@ -2136,6 +2136,7 @@ function extractSemanticSummary(worktreePath, sessionId) {
     const result = execFileSync('claude', [
       '--resume', sessionId,
       '--print',
+      '--output-format', 'text',
       'Summarize what you accomplished in 1-2 sentences. Be specific about outcomes (what was built, fixed, drafted), not process. If you failed or got stuck, explain what went wrong. If no code changes were made, say so. Do not use markdown.'
     ], {
       cwd: worktreePath,
@@ -2170,6 +2171,7 @@ function extractVisualArtifact(worktreePath, sessionId) {
     const result = execFileSync('claude', [
       '--resume', sessionId,
       '--print',
+      '--output-format', 'text',
       'Generate a Mermaid diagram showing the key architectural change or flow you implemented. ' +
       'Use graph LR for component relationships, sequenceDiagram for API/data flow, ' +
       'or gitGraph for branch operations. Keep it simple (5-10 nodes max). ' +
