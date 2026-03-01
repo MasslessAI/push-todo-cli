@@ -317,14 +317,19 @@ async function executeAction(job, logFn, context = {}) {
     case 'create-todo':
       if (context.apiRequest) {
         try {
+          const payload = {
+            title: job.action.content || job.name,
+            normalizedContent: job.action.detail || null,
+            isBacklog: job.action.backlog || false,
+            createdByClient: 'daemon-cron',
+          };
+          // Route to a specific project so the daemon can pick it up
+          if (job.action.gitRemote) payload.gitRemote = job.action.gitRemote;
+          if (job.action.actionType) payload.actionType = job.action.actionType;
+
           const response = await context.apiRequest('create-todo', {
             method: 'POST',
-            body: JSON.stringify({
-              title: job.action.content || job.name,
-              normalizedContent: job.action.detail || null,
-              isBacklog: job.action.backlog || false,
-              createdByClient: 'daemon-cron',
-            }),
+            body: JSON.stringify(payload),
           });
           if (response.ok) {
             const data = await response.json();

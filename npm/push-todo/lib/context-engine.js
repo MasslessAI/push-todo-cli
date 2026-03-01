@@ -110,10 +110,16 @@ export function scanProjectSkills(projectPath) {
         const content = readFileSync(skillFile, 'utf8');
         const { frontmatter, body } = parseFrontmatter(content);
 
+        // Parse tools field: comma-separated list of tool names/patterns
+        const tools = frontmatter.tools
+          ? frontmatter.tools.split(',').map(t => t.trim()).filter(Boolean)
+          : [];
+
         skills.push({
           name: frontmatter.name || entry,
           description: frontmatter.description || '',
           requiresConfirmation: body.includes('push-todo confirm'),
+          tools,
         });
       } catch {
         // Skip unreadable skill files

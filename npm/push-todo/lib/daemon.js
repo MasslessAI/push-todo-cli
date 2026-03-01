@@ -1693,14 +1693,22 @@ function respawnWithInjectedMessage(displayNumber) {
 
   const injectionPrompt = `IMPORTANT: The human sent you an urgent message while you were working:\n\n---\n${message}\n---\n\nPlease address this message and then continue with your task.`;
 
-  const allowedTools = [
+  // Reuse the same expanded tool list as executeTask
+  const baseTools = [
     'Read', 'Edit', 'Write', 'Glob', 'Grep',
     'Bash(git *)',
     'Bash(npm *)', 'Bash(npx *)', 'Bash(yarn *)',
     'Bash(python *)', 'Bash(python3 *)', 'Bash(pip *)', 'Bash(pip3 *)',
     'Bash(push-todo *)',
-    'Task'
-  ].join(',');
+    'Task',
+    'WebSearch', 'WebFetch',
+    'ToolSearch',
+  ];
+  const projectContext = projectPath ? getProjectContext(projectPath) : { skills: [], state: {} };
+  const skillTools = (projectContext.skills || [])
+    .flatMap(s => s.tools || [])
+    .filter(t => !baseTools.includes(t));
+  const allowedTools = [...baseTools, ...skillTools].join(',');
 
   // Generate new session ID for the respawned session
   const newSessionId = randomUUID();
@@ -2371,14 +2379,22 @@ async function executeTask(task) {
   // No duplicate status update needed here (was causing race conditions)
 
   // Build Claude command
-  const allowedTools = [
+  const baseTools = [
     'Read', 'Edit', 'Write', 'Glob', 'Grep',
     'Bash(git *)',
     'Bash(npm *)', 'Bash(npx *)', 'Bash(yarn *)',
     'Bash(python *)', 'Bash(python3 *)', 'Bash(pip *)', 'Bash(pip3 *)',
     'Bash(push-todo *)',
-    'Task'
-  ].join(',');
+    'Task',
+    'WebSearch', 'WebFetch',
+    'ToolSearch',
+  ];
+
+  // Merge tools declared by project skills (via `tools` frontmatter in SKILL.md)
+  const skillTools = (projectContext.skills || [])
+    .flatMap(s => s.tools || [])
+    .filter(t => !baseTools.includes(t));
+  const allowedTools = [...baseTools, ...skillTools].join(',');
 
   // For follow-ups: try --continue with previous session for full context.
   // Falls back to new session with prompt context if session is stale/unavailable.

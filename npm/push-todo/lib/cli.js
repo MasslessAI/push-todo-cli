@@ -124,6 +124,7 @@ ${bold('CRON (scheduled jobs):')}
     --cron <expression>            5-field cron expression
     --notify <message>             Send Mac notification
     --create-todo <content>        Create todo reminder
+    --git-remote <remote>          Route create-todo to a project (e.g. github.com/user/repo)
     --health-check <path>          Run codebase health check (scope: general|tests|deps)
   push-todo cron list              List all cron jobs
   push-todo cron remove <id>       Remove a cron job by ID
@@ -190,6 +191,7 @@ const options = {
   'queue-execution': { type: 'string' },
   'health-check': { type: 'string' },
   'scope': { type: 'string' },
+  'git-remote': { type: 'string' },
   // Skill CLI options (Phase 3)
   'report-progress': { type: 'string' },
   'phase': { type: 'string' },
@@ -734,6 +736,11 @@ export async function run(argv) {
       let action;
       if (values['create-todo']) {
         action = { type: 'create-todo', content: values['create-todo'] };
+        // Route to a specific project so the daemon picks it up
+        if (values['git-remote']) {
+          action.gitRemote = values['git-remote'];
+          action.actionType = 'claude-code';
+        }
       } else if (values.notify) {
         action = { type: 'notify', content: values.notify };
       } else if (values['queue-execution']) {
