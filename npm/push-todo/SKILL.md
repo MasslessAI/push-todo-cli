@@ -433,6 +433,12 @@ The `push-todo` CLI supports these commands:
 | `push-todo --status` | Show connection status |
 | `push-todo --mark-completed <uuid>` | Mark task as completed |
 | `push-todo --json` | Output as JSON |
+| `push-todo create <title>` | Create a todo from CLI |
+| `push-todo create <title> --remind <text>` | Create with reminder (e.g., "tomorrow night", "in 2 hours") |
+| `push-todo create <title> --remind-at <iso>` | Create with exact reminder date (ISO8601) |
+| `push-todo create <title> --alarm` | Mark reminder as urgent (bypasses Focus) |
+| `push-todo create <title> --content <text>` | Create with detailed content |
+| `push-todo create <title> --backlog` | Create as backlog item |
 | `push-todo schedule add` | Create a remote schedule (Supabase-backed) |
 | `push-todo schedule list` | List all remote schedules |
 | `push-todo schedule remove <id>` | Remove a schedule |

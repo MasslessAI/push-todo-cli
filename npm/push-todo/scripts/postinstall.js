@@ -6,10 +6,11 @@
  * 1. Claude Code - symlink to ~/.claude/skills/ (gives clean /push-todo command)
  * 2. OpenAI Codex - AGENTS.md in ~/.codex/
  * 3. OpenClaw - SKILL.md in ~/.openclaw/skills/ (legacy: ~/.clawdbot/)
- * 4. Downloads native keychain helper binary (macOS)
+ * 4. Bundled skills - auto-discovers bundled skills and creates per-skill symlinks
+ * 5. Downloads native keychain helper binary (macOS)
  */
 
-import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, symlinkSync, lstatSync, readlinkSync, rmSync, appendFileSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, symlinkSync, lstatSync, readlinkSync, rmSync, appendFileSync, readdirSync } from 'fs';
 import { chmod, stat } from 'fs/promises';
 import { pipeline } from 'stream/promises';
 import { join, dirname } from 'path';
@@ -302,6 +303,68 @@ function setupOpenClaw() {
 }
 
 /**
+ * Auto-discover bundled skills and create per-skill symlinks.
+ * Each bundled skill gets: <targetDir>/push-<name> -> PACKAGE_ROOT/skills/<name>
+ *
+ * Claude Code scans one level deep (~/.claude/skills/X/SKILL.md), but bundled
+ * skills are two levels deep from the root push-todo symlink. Per-skill symlinks
+ * give each bundled skill its own top-level entry for independent discovery.
+ *
+ * @param {string} targetSkillsDir - e.g. ~/.claude/skills/
+ * @param {string} clientLabel - e.g. "Claude Code"
+ * @returns {string[]} names of skills that were symlinked
+ */
+function setupBundledSkills(targetSkillsDir, clientLabel) {
+  const bundledDir = join(PACKAGE_ROOT, 'skills');
+  if (!existsSync(bundledDir)) return [];
+
+  let entries;
+  try {
+    entries = readdirSync(bundledDir);
+  } catch {
+    return [];
+  }
+
+  const installed = [];
+
+  for (const name of entries) {
+    const skillSource = join(bundledDir, name);
+    const skillMd = join(skillSource, 'SKILL.md');
+
+    // Only process directories containing SKILL.md
+    if (!existsSync(skillMd)) continue;
+
+    // Namespace with push- prefix (skip if already prefixed)
+    const linkName = name.startsWith('push-') ? name : `push-${name}`;
+    const linkPath = join(targetSkillsDir, linkName);
+
+    try {
+      if (existsSync(linkPath)) {
+        const stats = lstatSync(linkPath);
+        if (stats.isSymbolicLink()) {
+          const currentTarget = readlinkSync(linkPath);
+          if (currentTarget === skillSource) {
+            installed.push(linkName);
+            continue; // Already correct
+          }
+          unlinkSync(linkPath);
+        } else {
+          rmSync(linkPath, { recursive: true });
+        }
+      }
+
+      symlinkSync(skillSource, linkPath);
+      installed.push(linkName);
+      console.log(`[push-todo] ${clientLabel}: Bundled skill installed: ${linkName}`);
+    } catch (err) {
+      console.log(`[push-todo] ${clientLabel}: Failed to install bundled skill ${linkName}: ${err.message}`);
+    }
+  }
+
+  return installed;
+}
+
+/**
  * Download a file from URL to destination.
  *
  * @param {string} url - Source URL
@@ -356,15 +419,36 @@ async function main() {
   // Step 3: Set up Claude Code skill symlink
   console.log('[push-todo] Setting up Claude Code skill...');
   const claudeSuccess = setupClaudeSkill();
+  if (claudeSuccess) {
+    const bundled = setupBundledSkills(SKILL_DIR, 'Claude Code');
+    if (bundled.length > 0) {
+      console.log(`[push-todo] Claude Code: ${bundled.length} bundled skill(s) installed`);
+    }
+  }
   console.log('');
 
   // Step 4: Set up OpenAI Codex (if installed)
   const codexSuccess = setupCodex();
-  if (codexSuccess) console.log('');
+  if (codexSuccess) {
+    const codexSkillsDir = join(CODEX_DIR, 'skills');
+    const bundled = setupBundledSkills(codexSkillsDir, 'Codex');
+    if (bundled.length > 0) {
+      console.log(`[push-todo] Codex: ${bundled.length} bundled skill(s) installed`);
+    }
+    console.log('');
+  }
 
   // Step 5: Set up OpenClaw (if installed — formerly Clawdbot)
   const openclawSuccess = setupOpenClaw();
-  if (openclawSuccess) console.log('');
+  if (openclawSuccess) {
+    const clawDir = existsSync(OPENCLAW_DIR) ? OPENCLAW_DIR : OPENCLAW_LEGACY_DIR;
+    const clawSkillsDir = join(clawDir, 'skills');
+    const bundled = setupBundledSkills(clawSkillsDir, 'OpenClaw');
+    if (bundled.length > 0) {
+      console.log(`[push-todo] OpenClaw: ${bundled.length} bundled skill(s) installed`);
+    }
+    console.log('');
+  }
 
   // Track which clients were set up
   const clients = [];
