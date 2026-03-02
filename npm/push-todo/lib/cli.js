@@ -19,6 +19,7 @@ import { install as installLaunchAgent, uninstall as uninstallLaunchAgent, getSt
 import { getScreenshotPath, screenshotExists, openScreenshot } from './utils/screenshots.js';
 import { bold, red, cyan, dim, green } from './utils/colors.js';
 import { getMachineId } from './machine-id.js';
+import { parseReminder } from './reminder-parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -45,6 +46,9 @@ ${bold('USAGE:')}
   push-todo [options]              List active tasks
   push-todo <number>               Show specific task
   push-todo create <title>         Create a new todo
+    --remind <text>                Set reminder ("tomorrow night", "in 2 hours")
+    --remind-at <iso>              Set reminder at exact ISO8601 time
+    --alarm                        Mark as urgent (bypasses Focus)
   push-todo connect                Run connection doctor
   push-todo search <query>         Search tasks
   push-todo review                 Review completed tasks
@@ -92,6 +96,8 @@ ${bold('EXAMPLES:')}
   push-todo                        List active tasks for current project
   push-todo 427                    Show task #427
   push-todo create "Fix auth bug"  Create a new todo
+  push-todo create "Debug" --remind "tomorrow night"
+  push-todo create "Call" --remind "at 3pm" --alarm
   push-todo create "Item" --backlog Create as backlog item
   push-todo -a                     List all tasks across projects
   push-todo --queue 1,2,3          Queue tasks 1, 2, 3 for daemon
@@ -178,6 +184,10 @@ const options = {
   'store-e2ee-key': { type: 'string' },
   'description': { type: 'string' },
   'auto': { type: 'boolean' },
+  // Create command options
+  'remind': { type: 'string' },
+  'remind-at': { type: 'string' },
+  'alarm': { type: 'boolean' },
   // Confirm command options
   'type': { type: 'string' },
   'title': { type: 'string' },
@@ -684,9 +694,50 @@ export async function run(argv) {
       console.error('');
       console.error('Usage:');
       console.error('  push-todo create "Fix the auth bug"');
-      console.error('  push-todo create "Fix the auth bug" --backlog');
-      console.error('  push-todo create "Fix the auth bug" --content "Detailed description"');
+      console.error('  push-todo create "Debug daemon" --remind "tomorrow night"');
+      console.error('  push-todo create "Call dentist" --remind "at 3pm" --alarm');
+      console.error('  push-todo create "Deploy" --remind-at "2026-03-03T14:00:00"');
       process.exit(1);
+    }
+
+    // Conflict check
+    if (values.remind && values['remind-at']) {
+      console.error(red('Error: Use --remind OR --remind-at, not both.'));
+      process.exit(1);
+    }
+
+    // Parse reminder
+    let reminderDate = null;
+    let reminderTimeSource = null;
+    const alarmEnabled = values.alarm || false;
+
+    if (values['remind-at']) {
+      const parsed = new Date(values['remind-at']);
+      if (isNaN(parsed.getTime())) {
+        console.error(red('Error: --remind-at must be a valid ISO8601 date.'));
+        console.error(dim('  Example: 2026-03-03T14:00:00'));
+        process.exit(1);
+      }
+      if (parsed <= new Date()) {
+        console.error(red('Error: --remind-at must be in the future.'));
+        process.exit(1);
+      }
+      reminderDate = parsed.toISOString();
+      reminderTimeSource = 'userSpecified';
+    } else if (values.remind) {
+      const result = parseReminder(values.remind);
+      if (!result.date) {
+        console.error(red(`Error: Could not parse reminder: "${values.remind}"`));
+        console.error('');
+        console.error('Examples:');
+        console.error('  --remind "tomorrow"');
+        console.error('  --remind "tonight"');
+        console.error('  --remind "in 2 hours"');
+        console.error('  --remind "next monday at 3pm"');
+        process.exit(1);
+      }
+      reminderDate = result.date.toISOString();
+      reminderTimeSource = result.timeSource;
     }
 
     try {
@@ -694,12 +745,23 @@ export async function run(argv) {
         title,
         content: values.content || null,
         backlog: values.backlog || false,
+        reminderDate,
+        reminderTimeSource,
+        alarmEnabled,
       });
 
       if (values.json) {
         console.log(JSON.stringify(todo, null, 2));
       } else {
-        console.log(green(`Created todo #${todo.displayNumber}: ${todo.title}`));
+        let msg = green(`Created todo #${todo.displayNumber}: ${todo.title}`);
+        if (reminderDate) {
+          const d = new Date(reminderDate);
+          msg += `\n  ${dim('Reminder:')} ${d.toLocaleString()}`;
+        }
+        if (alarmEnabled) {
+          msg += `  ${dim('(urgent)')}`;
+        }
+        console.log(msg);
       }
     } catch (error) {
       console.error(red(`Failed to create todo: ${error.message}`));

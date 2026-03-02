@@ -154,9 +154,12 @@ export async function markTaskCompleted(taskId, comment = '') {
  * @param {string} options.title - Todo title (required)
  * @param {string|null} options.content - Detailed content (optional)
  * @param {boolean} options.backlog - Whether to create as backlog item
- * @returns {Promise<Object>} Created todo with { id, displayNumber, title, createdAt }
+ * @param {string|null} options.reminderDate - ISO8601 reminder date (optional)
+ * @param {string|null} options.reminderTimeSource - Time source enum (optional)
+ * @param {boolean} options.alarmEnabled - Whether to mark as urgent (optional)
+ * @returns {Promise<Object>} Created todo with { id, displayNumber, title, createdAt, reminderDate, reminderEnabled }
  */
-export async function createTodo({ title, content = null, backlog = false }) {
+export async function createTodo({ title, content = null, backlog = false, reminderDate = null, reminderTimeSource = null, alarmEnabled = false }) {
   const response = await apiRequest('create-todo', {
     method: 'POST',
     body: JSON.stringify({
@@ -164,6 +167,10 @@ export async function createTodo({ title, content = null, backlog = false }) {
       normalizedContent: content || null,
       isBacklog: backlog,
       createdByClient: 'cli',
+      reminderDate: reminderDate || null,
+      reminderEnabled: reminderDate != null,
+      reminderTimeSource: reminderTimeSource || null,
+      alarmEnabled,
     }),
   });
 
