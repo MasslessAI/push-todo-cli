@@ -550,85 +550,6 @@ async function fetchQueuedTasks() {
   }
 }
 
-// ==================== Scheduled Reminder Bridge ====================
-
-async function fetchScheduledTodos() {
-  try {
-    const machineId = getMachineId();
-    const params = new URLSearchParams();
-    params.set('scheduled_before', new Date().toISOString());
-    if (machineId) {
-      params.set('machine_id', machineId);
-    }
-
-    // Include registered git_remotes so backend can scope to this machine's projects
-    const projects = getListedProjects();
-    const gitRemotes = Object.keys(projects);
-    const headers = {};
-    if (machineId && gitRemotes.length > 0) {
-      headers['X-Machine-Id'] = machineId;
-      headers['X-Git-Remotes'] = gitRemotes.join(',');
-    }
-
-    const response = await apiRequest(`synced-todos?${params}`, { headers });
-    if (!response.ok) return [];
-
-    const data = await response.json();
-    return data.todos || [];
-  } catch (error) {
-    logError(`Failed to fetch scheduled todos: ${error.message}`);
-    return [];
-  }
-}
-
-async function checkAndQueueScheduledTodos() {
-  const scheduledTodos = await fetchScheduledTodos();
-  if (scheduledTodos.length === 0) return;
-
-  const registeredProjects = getListedProjects();
-
-  for (const todo of scheduledTodos) {
-    const dn = todo.displayNumber || todo.display_number;
-    const todoId = todo.id;
-
-    // Skip tasks already in an execution state (running, queued, completed, failed, etc.)
-    const execStatus = todo.executionStatus || todo.execution_status;
-    if (execStatus && execStatus !== 'none') {
-      continue;
-    }
-
-    // Skip completed tasks
-    if (todo.isCompleted || todo.is_completed) {
-      continue;
-    }
-
-    // Skip tasks whose project is not registered on this machine
-    const gitRemote = todo.gitRemote || todo.git_remote;
-    if (gitRemote && Object.keys(registeredProjects).length > 0) {
-      if (!(gitRemote in registeredProjects)) {
-        log(`Schedule skipped #${dn}: project ${gitRemote} not registered on this machine`);
-        continue;
-      }
-    }
-
-    log(`Schedule triggered for #${dn} (reminder_date: ${todo.reminderDate || todo.reminder_date})`);
-
-    try {
-      await updateTaskStatus(dn, 'queued', {
-        event: {
-          type: 'scheduled_trigger',
-          timestamp: new Date().toISOString(),
-          summary: 'Auto-queued: reminder time reached',
-        }
-      }, todoId);
-
-      log(`Queued #${dn} via schedule trigger`);
-    } catch (error) {
-      logError(`Failed to queue scheduled todo #${dn}: ${error.message}`);
-    }
-  }
-}
-
 // ==================== Task Status Updates ====================
 
 async function updateTaskStatus(displayNumber, status, extra = {}, todoId = null) {
@@ -3239,18 +3160,11 @@ async function mainLoop() {
     try {
       await checkTimeouts();
 
-      // Schedule bridge: auto-queue todos whose reminder time has arrived
-      try {
-        await checkAndQueueScheduledTodos();
-      } catch (error) {
-        logError(`Scheduled todo check error: ${error.message}`);
-      }
-
       await pollAndExecute();
 
       // Remote schedules from Supabase
       try {
-        await checkAndRunRemoteSchedules(log, { apiRequest });
+        await checkAndRunRemoteSchedules(log, { apiRequest, machineId: getMachineId() });
       } catch (error) {
         logError(`Remote schedules error: ${error.message}`);
       }

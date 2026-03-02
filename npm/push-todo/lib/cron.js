@@ -196,16 +196,21 @@ export function computeNextRun(schedule, fromDate = new Date()) {
  * @param {Function} [logFn] - Optional log function
  * @param {Object} [context] - Injected dependencies from daemon
  * @param {Function} [context.apiRequest] - API request function
+ * @param {string} [context.machineId] - This machine's ID for targeted schedule filtering
  */
 export async function checkAndRunRemoteSchedules(logFn, context = {}) {
   const log = logFn || (() => {});
 
   if (!context.apiRequest) return;
 
-  // 1. Fetch due schedules
+  // 1. Fetch due schedules (filtered by machine if available)
   let schedules;
   try {
-    const response = await context.apiRequest('manage-schedules?due=true', {
+    let endpoint = 'manage-schedules?due=true';
+    if (context.machineId) {
+      endpoint += `&machine_id=${encodeURIComponent(context.machineId)}`;
+    }
+    const response = await context.apiRequest(endpoint, {
       method: 'GET',
     });
     if (!response.ok) {
@@ -226,6 +231,7 @@ export async function checkAndRunRemoteSchedules(logFn, context = {}) {
   // 2. Fire each due schedule
   for (const schedule of schedules) {
     const expectedNextRunAt = schedule.next_run_at;
+    let actionSucceeded = false;
 
     try {
       if (schedule.action_type === 'create-todo') {
@@ -238,7 +244,8 @@ export async function checkAndRunRemoteSchedules(logFn, context = {}) {
         };
         if (schedule.git_remote) {
           payload.gitRemote = schedule.git_remote;
-          payload.actionType = 'claude-code';
+          // Use schedule's agent_type instead of hardcoding claude-code
+          payload.actionType = schedule.agent_type || 'claude-code';
         }
 
         const todoResponse = await context.apiRequest('create-todo', {
@@ -248,6 +255,7 @@ export async function checkAndRunRemoteSchedules(logFn, context = {}) {
         if (todoResponse.ok) {
           const todoData = await todoResponse.json();
           log(`Schedule "${schedule.name}": created todo #${todoData.todo?.displayNumber || '?'}`);
+          actionSucceeded = true;
         } else {
           log(`Schedule "${schedule.name}": create-todo failed (HTTP ${todoResponse.status})`);
         }
@@ -277,6 +285,7 @@ export async function checkAndRunRemoteSchedules(logFn, context = {}) {
         });
         if (queueResponse.ok) {
           log(`Schedule "${schedule.name}": queued todo ${schedule.todo_id}`);
+          actionSucceeded = true;
         } else {
           log(`Schedule "${schedule.name}": queue-todo failed (HTTP ${queueResponse.status})`);
         }
@@ -285,7 +294,12 @@ export async function checkAndRunRemoteSchedules(logFn, context = {}) {
       log(`Schedule "${schedule.name}": execution error: ${error.message}`);
     }
 
-    // 3. Advance next_run_at (with optimistic lock)
+    // 3. Advance next_run_at only if action succeeded (prevents silent lost fires)
+    if (!actionSucceeded) {
+      log(`Schedule "${schedule.name}": action failed, will retry next cycle`);
+      continue;
+    }
+
     const now = new Date();
     const scheduleConfig = { type: schedule.schedule_type, value: schedule.schedule_value };
 

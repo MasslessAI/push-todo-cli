@@ -132,6 +132,7 @@ ${bold('SCHEDULE (remote scheduled jobs):')}
     --create-todo <title>            Create a new todo each fire
     --queue-todo <todoId>            Re-queue an existing todo each fire
     --git-remote <remote>            Route created todos to a project
+    --agent-type <type>              Agent: claude-code, openclaw, openai-codex
     --content <body>                 Expanded content for created todos
   push-todo schedule list            List all schedules
   push-todo schedule remove <id>     Remove a schedule
@@ -201,6 +202,7 @@ const options = {
   'cron': { type: 'string' },
   'create-todo': { type: 'string' },
   'git-remote': { type: 'string' },
+  'agent-type': { type: 'string' },
   'queue-todo': { type: 'string' },
   // Skill CLI options (Phase 3)
   'report-progress': { type: 'string' },
@@ -825,6 +827,9 @@ export async function run(argv) {
         process.exit(1);
       }
 
+      // Resolve agent type: explicit flag > auto-detect from caller
+      const agentType = values['agent-type'] || null;
+
       try {
         const response = await api.apiRequest('manage-schedules', {
           method: 'POST',
@@ -833,6 +838,7 @@ export async function run(argv) {
             scheduleType,
             scheduleValue,
             actionType,
+            agentType,
             actionTitle,
             actionContent,
             gitRemote,
@@ -884,7 +890,8 @@ export async function run(argv) {
           const actionStr = s.action_type === 'create-todo'
             ? `create-todo: ${s.action_title || ''}`
             : `queue-todo: ${s.todo_id || '?'}`;
-          console.log(`  ${status} ${s.name} [${schedStr}] → ${actionStr}`);
+          const agentStr = s.agent_type && s.agent_type !== 'claude-code' ? ` (${s.agent_type})` : '';
+          console.log(`  ${status} ${s.name} [${schedStr}] → ${actionStr}${agentStr}`);
           console.log(dim(`     ID: ${s.id.slice(0, 8)} | Next: ${s.next_run_at || 'N/A'} | Last: ${s.last_run_at || 'never'}`));
         }
       } catch (error) {
@@ -958,6 +965,7 @@ ${bold('Examples:')}
   push-todo schedule add --name "Daily standup" --every 24h --create-todo "Write standup update"
   push-todo schedule add --name "Weekly review" --cron "0 9 * * 1" --create-todo "Weekly code review" --git-remote github.com/user/repo
   push-todo schedule add --name "Re-run task" --every 4h --queue-todo <todoId>
+  push-todo schedule add --name "Codex review" --every 12h --create-todo "Review PRs" --git-remote github.com/user/repo --agent-type openai-codex
     `);
     return;
   }
