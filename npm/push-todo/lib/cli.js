@@ -49,6 +49,7 @@ ${bold('USAGE:')}
   push-todo search <query>         Search tasks
   push-todo review                 Review completed tasks
   push-todo update                 Update CLI, check agents, refresh projects
+  push-todo schedule               Manage remote schedules (add/list/remove)
 
 ${bold('OPTIONS:')}
   --all-projects, -a               List tasks from all projects
@@ -116,18 +117,20 @@ ${bold('CONFIRM (for daemon skills):')}
   --metadata <json>                Optional JSON metadata for rich rendering
   --task <number>                  Display number (auto-detected in daemon)
 
-${bold('CRON (scheduled jobs):')}
-  push-todo cron add               Add a cron job
-    --name <name>                  Job name (required)
-    --every <interval>             Repeat interval: 30m, 1h, 24h, 7d
-    --at <iso-date>                One-shot at specific time
-    --cron <expression>            5-field cron expression
-    --notify <message>             Send Mac notification
-    --create-todo <content>        Create todo reminder
-    --git-remote <remote>          Route create-todo to a project (e.g. github.com/user/repo)
-    --health-check <path>          Run codebase health check (scope: general|tests|deps)
-  push-todo cron list              List all cron jobs
-  push-todo cron remove <id>       Remove a cron job by ID
+${bold('SCHEDULE (remote scheduled jobs):')}
+  push-todo schedule add             Create a schedule
+    --name <name>                    Schedule name (required)
+    --every <interval>               Repeat interval: 30m, 1h, 24h, 7d
+    --at <iso-date>                  One-shot at specific time
+    --cron <expression>              5-field cron expression
+    --create-todo <title>            Create a new todo each fire
+    --queue-todo <todoId>            Re-queue an existing todo each fire
+    --git-remote <remote>            Route created todos to a project
+    --content <body>                 Expanded content for created todos
+  push-todo schedule list            List all schedules
+  push-todo schedule remove <id>     Remove a schedule
+  push-todo schedule enable <id>     Enable a schedule
+  push-todo schedule disable <id>    Disable a schedule
 
 ${bold('SETTINGS:')}
   push-todo setting                Show all settings
@@ -181,17 +184,14 @@ const options = {
   'content': { type: 'string' },
   'metadata': { type: 'string' },
   'task': { type: 'string' },
-  // Cron command options
+  // Schedule command options
   'name': { type: 'string' },
   'every': { type: 'string' },
   'at': { type: 'string' },
   'cron': { type: 'string' },
   'create-todo': { type: 'string' },
-  'notify': { type: 'string' },
-  'queue-execution': { type: 'string' },
-  'health-check': { type: 'string' },
-  'scope': { type: 'string' },
   'git-remote': { type: 'string' },
+  'queue-todo': { type: 'string' },
   // Skill CLI options (Phase 3)
   'report-progress': { type: 'string' },
   'phase': { type: 'string' },
@@ -708,104 +708,194 @@ export async function run(argv) {
     return;
   }
 
-  // Cron command - scheduled jobs
-  if (command === 'cron') {
-    const { addJob, removeJob, listJobs } = await import('./cron.js');
+  // Schedule command - Supabase-backed unified scheduling
+  if (command === 'schedule') {
+    const { computeNextRun } = await import('./cron.js');
     const subCommand = positionals[1];
 
     if (subCommand === 'add') {
       if (!values.name) {
-        console.error(red('--name is required for cron add'));
+        console.error(red('--name is required for schedule add'));
         process.exit(1);
       }
 
-      // Determine schedule
-      let schedule;
+      // Determine schedule timing
+      let scheduleType, scheduleValue;
       if (values.every) {
-        schedule = { type: 'every', value: values.every };
+        scheduleType = 'every';
+        scheduleValue = values.every;
       } else if (values.at) {
-        schedule = { type: 'at', value: values.at };
+        scheduleType = 'at';
+        scheduleValue = values.at;
       } else if (values.cron) {
-        schedule = { type: 'cron', value: values.cron };
+        scheduleType = 'cron';
+        scheduleValue = values.cron;
       } else {
         console.error(red('Schedule required: --every, --at, or --cron'));
         process.exit(1);
       }
 
-      // Determine action
-      let action;
-      if (values['create-todo']) {
-        action = { type: 'create-todo', content: values['create-todo'] };
-        // Route to a specific project so the daemon picks it up
-        if (values['git-remote']) {
-          action.gitRemote = values['git-remote'];
-          action.actionType = 'claude-code';
+      // Validate schedule and compute next run
+      let nextRunAt;
+      try {
+        nextRunAt = computeNextRun({ type: scheduleType, value: scheduleValue });
+        if (!nextRunAt) {
+          console.error(red('Schedule has no future run time'));
+          process.exit(1);
         }
-      } else if (values.notify) {
-        action = { type: 'notify', content: values.notify };
-      } else if (values['queue-execution']) {
-        action = { type: 'queue-execution', todoId: values['queue-execution'] };
-      } else if (values['health-check']) {
-        action = {
-          type: 'health-check',
-          projectPath: values['health-check'],
-          scope: values.scope || 'general',
-        };
+      } catch (error) {
+        console.error(red(`Invalid schedule: ${error.message}`));
+        process.exit(1);
+      }
+
+      // Determine action
+      let actionType, actionTitle, actionContent, gitRemote, todoId;
+      if (values['create-todo']) {
+        actionType = 'create-todo';
+        actionTitle = values['create-todo'];
+        actionContent = values.content || null;
+        gitRemote = values['git-remote'] || null;
+      } else if (values['queue-todo']) {
+        actionType = 'queue-todo';
+        todoId = values['queue-todo'];
       } else {
-        console.error(red('Action required: --create-todo, --notify, --queue-execution, or --health-check'));
+        console.error(red('Action required: --create-todo <title> or --queue-todo <todoId>'));
         process.exit(1);
       }
 
       try {
-        const job = addJob({ name: values.name, schedule, action });
-        console.log(green(`Created cron job: ${job.name} (ID: ${job.id.slice(0, 8)})`));
-        console.log(dim(`Next run: ${job.nextRunAt}`));
+        const response = await api.apiRequest('manage-schedules', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: values.name,
+            scheduleType,
+            scheduleValue,
+            actionType,
+            actionTitle,
+            actionContent,
+            gitRemote,
+            todoId,
+            nextRunAt,
+          }),
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          console.error(red(`Failed to create schedule: ${data.error || response.status}`));
+          process.exit(1);
+        }
+
+        const data = await response.json();
+        const s = data.schedule;
+        console.log(green(`Created schedule: ${s.name} (ID: ${s.id.slice(0, 8)})`));
+        console.log(dim(`Next run: ${s.next_run_at}`));
       } catch (error) {
-        console.error(red(`Failed to create cron job: ${error.message}`));
+        console.error(red(`Failed to create schedule: ${error.message}`));
         process.exit(1);
       }
       return;
     }
 
     if (subCommand === 'list') {
-      const jobs = listJobs();
-      if (jobs.length === 0) {
-        console.log('No cron jobs configured.');
-        console.log(dim('Add one with: push-todo cron add --name "..." --every "24h" --notify "..."'));
-        return;
-      }
-      console.log(bold('Cron Jobs:'));
-      for (const job of jobs) {
-        const status = job.enabled ? green('ON') : dim('OFF');
-        const schedStr = job.schedule.type === 'every' ? `every ${job.schedule.value}` :
-                         job.schedule.type === 'at' ? `at ${job.schedule.value}` :
-                         `cron: ${job.schedule.value}`;
-        console.log(`  ${status} ${job.name} [${schedStr}] → ${job.action.type}: ${job.action.content || job.action.todoId || ''}`);
-        console.log(dim(`     ID: ${job.id.slice(0, 8)} | Next: ${job.nextRunAt || 'N/A'} | Last: ${job.lastRunAt || 'never'}`));
+      try {
+        const response = await api.apiRequest('manage-schedules', { method: 'GET' });
+        if (!response.ok) {
+          console.error(red(`Failed to list schedules: HTTP ${response.status}`));
+          process.exit(1);
+        }
+
+        const data = await response.json();
+        const schedules = data.schedules || [];
+
+        if (schedules.length === 0) {
+          console.log('No schedules configured.');
+          console.log(dim('Add one with: push-todo schedule add --name "..." --every "4h" --create-todo "..."'));
+          return;
+        }
+
+        console.log(bold('Schedules:'));
+        for (const s of schedules) {
+          const status = s.enabled ? green('ON') : dim('OFF');
+          const schedStr = s.schedule_type === 'every' ? `every ${s.schedule_value}` :
+                           s.schedule_type === 'at' ? `at ${s.schedule_value}` :
+                           `cron: ${s.schedule_value}`;
+          const actionStr = s.action_type === 'create-todo'
+            ? `create-todo: ${s.action_title || ''}`
+            : `queue-todo: ${s.todo_id || '?'}`;
+          console.log(`  ${status} ${s.name} [${schedStr}] → ${actionStr}`);
+          console.log(dim(`     ID: ${s.id.slice(0, 8)} | Next: ${s.next_run_at || 'N/A'} | Last: ${s.last_run_at || 'never'}`));
+        }
+      } catch (error) {
+        console.error(red(`Failed to list schedules: ${error.message}`));
+        process.exit(1);
       }
       return;
     }
 
     if (subCommand === 'remove') {
-      const jobId = positionals[2];
-      if (!jobId) {
-        console.error(red('Usage: push-todo cron remove <id>'));
+      const scheduleId = positionals[2];
+      if (!scheduleId) {
+        console.error(red('Usage: push-todo schedule remove <id>'));
         process.exit(1);
       }
-      if (removeJob(jobId)) {
-        console.log(green(`Removed cron job ${jobId}`));
-      } else {
-        console.error(red(`Cron job not found: ${jobId}`));
+
+      try {
+        const response = await api.apiRequest(`manage-schedules?id=${scheduleId}`, {
+          method: 'DELETE',
+        });
+        if (response.ok) {
+          console.log(green(`Removed schedule ${scheduleId}`));
+        } else {
+          const data = await response.json();
+          console.error(red(`Failed to remove schedule: ${data.error || response.status}`));
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(red(`Failed to remove schedule: ${error.message}`));
         process.exit(1);
       }
       return;
     }
 
-    // Default: show help for cron
-    console.log(`${bold('Cron Commands:')}
-  push-todo cron add     Add a new scheduled job
-  push-todo cron list    List all jobs
-  push-todo cron remove  Remove a job by ID
+    if (subCommand === 'enable' || subCommand === 'disable') {
+      const scheduleId = positionals[2];
+      if (!scheduleId) {
+        console.error(red(`Usage: push-todo schedule ${subCommand} <id>`));
+        process.exit(1);
+      }
+
+      const enabled = subCommand === 'enable';
+      try {
+        const response = await api.apiRequest('manage-schedules', {
+          method: 'PATCH',
+          body: JSON.stringify({ id: scheduleId, enabled }),
+        });
+        if (response.ok) {
+          console.log(green(`Schedule ${scheduleId} ${enabled ? 'enabled' : 'disabled'}`));
+        } else {
+          const data = await response.json();
+          console.error(red(`Failed to ${subCommand} schedule: ${data.error || response.status}`));
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(red(`Failed to ${subCommand} schedule: ${error.message}`));
+        process.exit(1);
+      }
+      return;
+    }
+
+    // Default: show help for schedule
+    console.log(`${bold('Schedule Commands:')}
+  push-todo schedule add      Create a new remote schedule
+  push-todo schedule list     List all schedules
+  push-todo schedule remove   Remove a schedule by ID
+  push-todo schedule enable   Enable a schedule
+  push-todo schedule disable  Disable a schedule
+
+${bold('Examples:')}
+  push-todo schedule add --name "Daily standup" --every 24h --create-todo "Write standup update"
+  push-todo schedule add --name "Weekly review" --cron "0 9 * * 1" --create-todo "Weekly code review" --git-remote github.com/user/repo
+  push-todo schedule add --name "Re-run task" --every 4h --queue-todo <todoId>
     `);
     return;
   }

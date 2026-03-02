@@ -23,7 +23,7 @@ import { fileURLToPath } from 'url';
 import { checkForUpdate, performUpdate } from './self-update.js';
 import { getProjectContext, buildSmartPrompt, invalidateCache } from './context-engine.js';
 import { sendMacNotification } from './utils/notify.js';
-import { checkAndRunDueJobs } from './cron.js';
+import { checkAndRunRemoteSchedules } from './cron.js';
 import { runHeartbeatChecks } from './heartbeat.js';
 import { getAgentVersions, formatAgentVersionSummary, checkAllAgentUpdates, performAgentUpdate, checkVersionParity, ensureAgentReady } from './agent-versions.js';
 import { checkAllProjectsFreshness } from './project-freshness.js';
@@ -3078,126 +3078,6 @@ function logVersionParityWarnings() {
 
 // ==================== Health Check (Phase 5) ====================
 
-/**
- * Spawn a health check Claude session for a project.
- * Called by the cron module when a health-check job fires.
- *
- * The session runs in the project directory with a special prompt that asks
- * Claude to review the codebase and suggest tasks. Results are created as
- * draft todos via the create-todo API.
- *
- * @param {Object} job - Cron job object
- * @param {Function} logFn - Log function
- */
-async function spawnHealthCheck(job, logFn) {
-  const projectPath = job.action.projectPath;
-  if (!projectPath || !existsSync(projectPath)) {
-    logFn(`Health check: project path not found: ${projectPath}`);
-    return;
-  }
-
-  // Don't run if task slots are full
-  if (runningTasks.size >= MAX_CONCURRENT_TASKS) {
-    logFn(`Health check: all ${MAX_CONCURRENT_TASKS} slots in use, deferring`);
-    return;
-  }
-
-  const scope = job.action.scope || 'general';
-  const customPrompt = job.action.prompt || '';
-
-  const healthPrompts = {
-    general: `Review this codebase briefly. Check for:
-1. Failing tests (run the test suite if one exists)
-2. Obvious bugs or issues in recently modified files (last 7 days)
-3. Outdated dependencies worth updating
-
-For each issue found, create a todo using: push-todo create "<clear description of the issue>"
-Only create todos for real, actionable issues — not style preferences or minor improvements.
-If everything looks good, just say "No issues found" and don't create any todos.`,
-    tests: `Run the test suite for this project. If any tests fail, create a todo for each failure:
-push-todo create "Fix failing test: <test name> - <brief reason>"
-If all tests pass, say "All tests pass" and don't create any todos.`,
-    dependencies: `Check for outdated dependencies in this project. Only flag dependencies with:
-- Known security vulnerabilities
-- Major version bumps (not minor/patch)
-For each, create a todo: push-todo create "Update <dep> from <old> to <new> (<reason>)"
-If dependencies are current, say "All dependencies up to date."`,
-  };
-
-  const prompt = customPrompt || healthPrompts[scope] || healthPrompts.general;
-
-  const allowedTools = [
-    'Read', 'Glob', 'Grep',
-    'Bash(git *)',
-    'Bash(npm *)', 'Bash(npx *)',
-    'Bash(python *)', 'Bash(python3 *)',
-    'Bash(push-todo create *)',
-  ].join(',');
-
-  const claudeArgs = [
-    '-p', prompt,
-    '--verbose',
-    '--allowedTools', allowedTools,
-    '--output-format', 'stream-json',
-    '--permission-mode', 'bypassPermissions',
-  ];
-
-  logFn(`Health check "${job.name}": spawning Claude in ${projectPath} (scope: ${scope})`);
-
-  try {
-    const child = spawn('claude', claudeArgs, {
-      cwd: projectPath,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: (() => {
-        const env = { ...process.env };
-        delete env.CLAUDECODE;
-        delete env.CLAUDE_CODE_ENTRYPOINT;
-        return env;
-      })(),
-      timeout: 300000, // 5 min max for health checks
-    });
-
-    // Simple output tracking — health checks are lightweight, no full task tracking
-    let output = '';
-    child.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    child.stderr.on('data', (data) => {
-      const errLine = data.toString().trim();
-      if (errLine) logFn(`Health check "${job.name}" stderr: ${errLine}`);
-    });
-
-    await new Promise((resolve) => {
-      child.on('close', (code) => {
-        if (code === 0) {
-          logFn(`Health check "${job.name}": completed successfully`);
-        } else {
-          logFn(`Health check "${job.name}": exited with code ${code}`);
-        }
-        resolve();
-      });
-      child.on('error', (err) => {
-        logFn(`Health check "${job.name}": spawn error: ${err.message}`);
-        resolve();
-      });
-    });
-
-    // Extract any text summary from stream-json output
-    const lines = output.split('\n').filter(l => l.trim());
-    for (const line of lines) {
-      try {
-        const event = JSON.parse(line);
-        if (event.type === 'result' && event.result) {
-          logFn(`Health check "${job.name}" result: ${event.result.slice(0, 200)}`);
-        }
-      } catch { /* ignore non-JSON lines */ }
-    }
-  } catch (error) {
-    logFn(`Health check "${job.name}": error: ${error.message}`);
-  }
-}
-
 // ==================== Main Loop ====================
 
 async function pollAndExecute() {
@@ -3368,11 +3248,11 @@ async function mainLoop() {
 
       await pollAndExecute();
 
-      // Cron jobs (check every poll cycle, execution throttled by nextRunAt)
+      // Remote schedules from Supabase
       try {
-        await checkAndRunDueJobs(log, { apiRequest, spawnHealthCheck });
+        await checkAndRunRemoteSchedules(log, { apiRequest });
       } catch (error) {
-        logError(`Cron check error: ${error.message}`);
+        logError(`Remote schedules error: ${error.message}`);
       }
 
       // Heartbeat checks (internally throttled: 10min fast, 1hr slow)

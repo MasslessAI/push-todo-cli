@@ -1,50 +1,12 @@
 /**
- * Cron job scheduler for Push daemon.
+ * Schedule engine for Push daemon.
  *
- * Stores recurring/one-shot jobs in ~/.push/cron/jobs.json.
- * Called from daemon main loop on each poll cycle.
+ * Pure scheduling logic (interval parsing, cron expressions, next-run computation)
+ * plus the remote schedule checker that polls Supabase.
  *
  * No npm dependencies — includes minimal cron expression parser.
- * Architecture: docs/20260214_push_daemon_evolution_complete_architecture.md §23
- * Pattern: Follow self-update.js — pure functions, called from daemon.js.
+ * Architecture: docs/20260301_system_architecture_complete_reference.md
  */
-
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
-import { randomUUID } from 'crypto';
-import { sendMacNotification } from './utils/notify.js';
-
-const CRON_DIR = join(homedir(), '.push', 'cron');
-const JOBS_FILE = join(CRON_DIR, 'jobs.json');
-
-// ==================== Storage ====================
-
-function ensureCronDir() {
-  mkdirSync(CRON_DIR, { recursive: true });
-}
-
-/**
- * Load all cron jobs from disk.
- * @returns {Array} Job objects
- */
-export function loadJobs() {
-  if (!existsSync(JOBS_FILE)) return [];
-  try {
-    return JSON.parse(readFileSync(JOBS_FILE, 'utf8'));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Save all cron jobs to disk.
- * @param {Array} jobs
- */
-export function saveJobs(jobs) {
-  ensureCronDir();
-  writeFileSync(JOBS_FILE, JSON.stringify(jobs, null, 2) + '\n');
-}
 
 // ==================== Interval Parsing ====================
 
@@ -225,219 +187,135 @@ export function computeNextRun(schedule, fromDate = new Date()) {
   }
 }
 
-// ==================== Job Management ====================
+// ==================== Remote Schedules (Supabase) ====================
 
 /**
- * Add a new cron job.
- *
- * @param {Object} config
- * @param {string} config.name - Job name
- * @param {{ type: string, value: string }} config.schedule - Schedule definition
- * @param {{ type: string, content: string }} config.action - Action to perform
- * @returns {Object} Created job
- */
-export function addJob(config) {
-  const { name, schedule, action } = config;
-
-  if (!name) throw new Error('Job name is required');
-  if (!schedule || !schedule.type || !schedule.value) throw new Error('Schedule is required');
-  if (!action || !action.type) throw new Error('Action is required');
-
-  // Validate schedule by computing next run
-  const nextRunAt = computeNextRun(schedule);
-  if (!nextRunAt) {
-    throw new Error(`Schedule "${schedule.type}: ${schedule.value}" has no future run time`);
-  }
-
-  const job = {
-    id: randomUUID(),
-    name,
-    schedule,
-    action,
-    enabled: true,
-    createdAt: new Date().toISOString(),
-    lastRunAt: null,
-    nextRunAt,
-  };
-
-  const jobs = loadJobs();
-  jobs.push(job);
-  saveJobs(jobs);
-
-  return job;
-}
-
-/**
- * Remove a cron job by ID or ID prefix.
- *
- * @param {string} idOrPrefix - Full UUID or prefix (min 4 chars)
- * @returns {boolean} True if found and removed
- */
-export function removeJob(idOrPrefix) {
-  const jobs = loadJobs();
-  const idx = jobs.findIndex(j =>
-    j.id === idOrPrefix || j.id.startsWith(idOrPrefix)
-  );
-
-  if (idx === -1) return false;
-
-  jobs.splice(idx, 1);
-  saveJobs(jobs);
-  return true;
-}
-
-/**
- * List all cron jobs.
- * @returns {Array} Job objects
- */
-export function listJobs() {
-  return loadJobs();
-}
-
-// ==================== Execution ====================
-
-/**
- * Execute a cron job action.
- *
- * @param {Object} job - Job object
- * @param {Function} [logFn] - Optional log function
- * @param {Object} [context] - Injected dependencies from daemon
- * @param {Function} [context.apiRequest] - API request function
- * @param {Function} [context.spawnHealthCheck] - Spawn a health check Claude session
- */
-async function executeAction(job, logFn, context = {}) {
-  const log = logFn || (() => {});
-
-  switch (job.action.type) {
-    case 'notify':
-      sendMacNotification('Push Cron', job.action.content || job.name);
-      log(`Cron "${job.name}": notification sent`);
-      break;
-
-    case 'create-todo':
-      if (context.apiRequest) {
-        try {
-          const payload = {
-            title: job.action.content || job.name,
-            normalizedContent: job.action.detail || null,
-            isBacklog: job.action.backlog || false,
-            createdByClient: 'daemon-cron',
-          };
-          // Route to a specific project so the daemon can pick it up
-          if (job.action.gitRemote) payload.gitRemote = job.action.gitRemote;
-          if (job.action.actionType) payload.actionType = job.action.actionType;
-
-          const response = await context.apiRequest('create-todo', {
-            method: 'POST',
-            body: JSON.stringify(payload),
-          });
-          if (response.ok) {
-            const data = await response.json();
-            log(`Cron "${job.name}": created todo #${data.todo?.displayNumber || '?'}`);
-          } else {
-            log(`Cron "${job.name}": create-todo failed (HTTP ${response.status})`);
-            // Fall back to notification
-            sendMacNotification('Push: Scheduled Todo', job.action.content || job.name);
-          }
-        } catch (error) {
-          log(`Cron "${job.name}": create-todo error: ${error.message}`);
-          sendMacNotification('Push: Scheduled Todo', job.action.content || job.name);
-        }
-      } else {
-        sendMacNotification('Push: Scheduled Todo', job.action.content || job.name);
-        log(`Cron "${job.name}": todo reminder sent (notification, no API context)`);
-      }
-      break;
-
-    case 'queue-execution':
-      if (!job.action.todoId) {
-        log(`Cron "${job.name}": queue-execution requires todoId, skipping`);
-      } else if (context.apiRequest) {
-        try {
-          const response = await context.apiRequest('update-task-execution', {
-            method: 'PATCH',
-            body: JSON.stringify({
-              todoId: job.action.todoId,
-              status: 'queued',
-            }),
-          });
-          if (response.ok) {
-            log(`Cron "${job.name}": queued todo ${job.action.todoId} for execution`);
-          } else {
-            log(`Cron "${job.name}": queue-execution failed (HTTP ${response.status})`);
-          }
-        } catch (error) {
-          log(`Cron "${job.name}": queue-execution error: ${error.message}`);
-        }
-      } else {
-        log(`Cron "${job.name}": queue-execution not available (no API context)`);
-      }
-      break;
-
-    case 'health-check':
-      if (context.spawnHealthCheck) {
-        try {
-          await context.spawnHealthCheck(job, log);
-        } catch (error) {
-          log(`Cron "${job.name}": health-check error: ${error.message}`);
-        }
-      } else {
-        log(`Cron "${job.name}": health-check not available (no daemon context)`);
-      }
-      break;
-
-    default:
-      log(`Cron "${job.name}": unknown action type "${job.action.type}"`);
-  }
-}
-
-/**
- * Check for and run any due cron jobs.
+ * Check for and run any due remote schedules from Supabase.
  * Called from daemon poll loop on every cycle.
  *
  * @param {Function} [logFn] - Optional log function
- * @param {Object} [context] - Injected dependencies (apiRequest, spawnHealthCheck)
+ * @param {Object} [context] - Injected dependencies from daemon
+ * @param {Function} [context.apiRequest] - API request function
  */
-export async function checkAndRunDueJobs(logFn, context = {}) {
-  const jobs = loadJobs();
-  if (jobs.length === 0) return;
+export async function checkAndRunRemoteSchedules(logFn, context = {}) {
+  const log = logFn || (() => {});
 
-  const now = new Date();
-  let modified = false;
+  if (!context.apiRequest) return;
 
-  for (const job of jobs) {
-    if (!job.enabled) continue;
-    if (!job.nextRunAt) continue;
+  // 1. Fetch due schedules
+  let schedules;
+  try {
+    const response = await context.apiRequest('manage-schedules?due=true', {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      log(`Remote schedules: fetch failed (HTTP ${response.status})`);
+      return;
+    }
+    const data = await response.json();
+    schedules = data.schedules || [];
+  } catch (error) {
+    log(`Remote schedules: fetch error: ${error.message}`);
+    return;
+  }
 
-    const nextRun = new Date(job.nextRunAt);
-    if (nextRun > now) continue;
+  if (schedules.length === 0) return;
 
-    // Job is due — execute
+  log(`Remote schedules: ${schedules.length} due`);
+
+  // 2. Fire each due schedule
+  for (const schedule of schedules) {
+    const expectedNextRunAt = schedule.next_run_at;
+
     try {
-      await executeAction(job, logFn, context);
+      if (schedule.action_type === 'create-todo') {
+        // Create a new todo
+        const payload = {
+          title: schedule.action_title || schedule.name,
+          normalizedContent: schedule.action_content || null,
+          isBacklog: false,
+          createdByClient: 'daemon-schedule',
+        };
+        if (schedule.git_remote) {
+          payload.gitRemote = schedule.git_remote;
+          payload.actionType = 'claude-code';
+        }
+
+        const todoResponse = await context.apiRequest('create-todo', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        if (todoResponse.ok) {
+          const todoData = await todoResponse.json();
+          log(`Schedule "${schedule.name}": created todo #${todoData.todo?.displayNumber || '?'}`);
+        } else {
+          log(`Schedule "${schedule.name}": create-todo failed (HTTP ${todoResponse.status})`);
+        }
+
+      } else if (schedule.action_type === 'queue-todo') {
+        // Re-queue an existing todo
+        if (!schedule.todo_id) {
+          log(`Schedule "${schedule.name}": queue-todo has no todo_id, disabling`);
+          await context.apiRequest('manage-schedules', {
+            method: 'PATCH',
+            body: JSON.stringify({
+              id: schedule.id,
+              enabled: false,
+              lastRunAt: new Date().toISOString(),
+              nextRunAt: null,
+            }),
+          });
+          continue;
+        }
+
+        const queueResponse = await context.apiRequest('update-task-execution', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            todoId: schedule.todo_id,
+            status: 'queued',
+          }),
+        });
+        if (queueResponse.ok) {
+          log(`Schedule "${schedule.name}": queued todo ${schedule.todo_id}`);
+        } else {
+          log(`Schedule "${schedule.name}": queue-todo failed (HTTP ${queueResponse.status})`);
+        }
+      }
     } catch (error) {
-      if (logFn) logFn(`Cron "${job.name}" execution failed: ${error.message}`);
+      log(`Schedule "${schedule.name}": execution error: ${error.message}`);
     }
 
-    // Update timing
-    job.lastRunAt = now.toISOString();
+    // 3. Advance next_run_at (with optimistic lock)
+    const now = new Date();
+    const scheduleConfig = { type: schedule.schedule_type, value: schedule.schedule_value };
 
-    if (job.schedule.type === 'at') {
+    let nextRunAt = null;
+    let enabled = true;
+
+    if (schedule.schedule_type === 'at') {
       // One-shot: disable after run
-      job.enabled = false;
-      job.nextRunAt = null;
+      enabled = false;
     } else {
       // Recurring: compute next run
-      job.nextRunAt = computeNextRun(job.schedule, now);
-      if (!job.nextRunAt) {
-        job.enabled = false; // No more future runs
+      nextRunAt = computeNextRun(scheduleConfig, now);
+      if (!nextRunAt) {
+        enabled = false;
       }
     }
 
-    modified = true;
-  }
-
-  if (modified) {
-    saveJobs(jobs);
+    try {
+      await context.apiRequest('manage-schedules', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          id: schedule.id,
+          enabled,
+          lastRunAt: now.toISOString(),
+          nextRunAt,
+          expectedNextRunAt,
+        }),
+      });
+    } catch (error) {
+      log(`Schedule "${schedule.name}": failed to advance next_run_at: ${error.message}`);
+    }
   }
 }

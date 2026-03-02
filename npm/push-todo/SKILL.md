@@ -433,6 +433,11 @@ The `push-todo` CLI supports these commands:
 | `push-todo --status` | Show connection status |
 | `push-todo --mark-completed <uuid>` | Mark task as completed |
 | `push-todo --json` | Output as JSON |
+| `push-todo schedule add` | Create a remote schedule (Supabase-backed) |
+| `push-todo schedule list` | List all remote schedules |
+| `push-todo schedule remove <id>` | Remove a schedule |
+| `push-todo schedule enable <id>` | Enable a schedule |
+| `push-todo schedule disable <id>` | Disable a schedule |
 
 ## What is Push?
 

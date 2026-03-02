@@ -521,4 +521,4 @@ export async function requestInput(todoId, question, timeoutMs = 300000) {
   return null; // Timeout
 }
 
-export { API_BASE };
+export { API_BASE, apiRequest };
