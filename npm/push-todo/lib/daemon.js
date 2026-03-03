@@ -2564,16 +2564,30 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       executionSummary += ` PR: ${prUrl}`;
     }
 
+    // Build structured recap for briefing visualization (JSONB column)
+    const prNumber = prUrl ? parseInt((prUrl.match(/\/(\d+)$/) || [])[1] || '0', 10) || null : null;
+    const executionRecap = {
+      durationStr,
+      durationSeconds: duration,
+      diagram: visualArtifact || null,
+      machineName,
+      outcome: {
+        prUrl: prUrl || null,
+        prNumber,
+      },
+    };
+
     const statusUpdated = await updateTaskStatus(displayNumber, 'session_finished', {
       duration,
       sessionId,
-      summary: executionSummary
+      summary: executionSummary,
+      executionRecap,
     }, info.taskId);
     if (!statusUpdated) {
       logError(`Task #${displayNumber}: Failed to update status to session_finished — will retry`);
       // Retry once
       await updateTaskStatus(displayNumber, 'session_finished', {
-        duration, sessionId, summary: executionSummary
+        duration, sessionId, summary: executionSummary, executionRecap,
       }, info.taskId);
     }
 
@@ -2692,7 +2706,13 @@ async function handleTaskCompletion(displayNumber, exitCode) {
       ? `${failureSummary}\nExit code ${exitCode}. Ran for ${durationStr} on ${machineName}.`
       : `Exit code ${exitCode}: ${stderr.slice(0, 200)}`;
 
-    await updateTaskStatus(displayNumber, 'failed', { error: errorMsg, sessionId }, info.taskId);
+    const failedRecap = {
+      durationStr,
+      durationSeconds: duration,
+      machineName,
+      exitCode,
+    };
+    await updateTaskStatus(displayNumber, 'failed', { error: errorMsg, sessionId, executionRecap: failedRecap }, info.taskId);
 
     if (NOTIFY_ON_FAILURE) {
       sendMacNotification(
