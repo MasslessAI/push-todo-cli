@@ -111,8 +111,10 @@ export function scanProjectSkills(projectPath) {
         const { frontmatter, body } = parseFrontmatter(content);
 
         // Parse tools field: comma-separated list of tool names/patterns
-        const tools = frontmatter.tools
-          ? frontmatter.tools.split(',').map(t => t.trim()).filter(Boolean)
+        // Skills use "allowed-tools" in frontmatter, fall back to "tools" for compatibility
+        const toolsRaw = frontmatter['allowed-tools'] || frontmatter.tools;
+        const tools = toolsRaw
+          ? toolsRaw.split(',').map(t => t.trim()).filter(Boolean)
           : [];
 
         skills.push({

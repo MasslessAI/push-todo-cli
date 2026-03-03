@@ -1621,7 +1621,9 @@ function respawnWithInjectedMessage(displayNumber) {
     'Bash(npm *)', 'Bash(npx *)', 'Bash(yarn *)',
     'Bash(python *)', 'Bash(python3 *)', 'Bash(pip *)', 'Bash(pip3 *)',
     'Bash(push-todo *)',
-    'Task',
+    'Bash(bird *)', 'Bash(gh *)',
+    'Bash(redbook *)',
+    'Task', 'Agent',
     'WebSearch', 'WebFetch',
     'ToolSearch',
   ];
@@ -1943,8 +1945,15 @@ async function killIdleTasks() {
     if (!lastOutput) continue; // No output tracking yet — not idle, just starting
 
     const idleMs = now - lastOutput;
-    if (idleMs > IDLE_TIMEOUT_MS) {
-      log(`Task #${displayNumber} IDLE TIMEOUT: ${Math.floor(idleMs / 1000)}s since last output`);
+
+    // Agent subprocesses can run for minutes without producing stdout.
+    // Use a longer timeout (3x) when the last known tool is Agent.
+    const activity = taskActivityState.get(displayNumber) || {};
+    const isAgentRunning = activity.currentTool === 'Agent';
+    const effectiveTimeout = isAgentRunning ? IDLE_TIMEOUT_MS * 3 : IDLE_TIMEOUT_MS;
+
+    if (idleMs > effectiveTimeout) {
+      log(`Task #${displayNumber} IDLE TIMEOUT: ${Math.floor(idleMs / 1000)}s since last output${isAgentRunning ? ' (Agent extended)' : ''}`);
       idleTimedOut.push(displayNumber);
     }
   }
@@ -2274,9 +2283,11 @@ async function executeTask(task) {
       parts.push('Links:\n' + links.map(l => `  - ${l.url}${l.title ? ` (${l.title})` : ''}`).join('\n'));
     }
     if (screenshots.length > 0) {
-      parts.push('Screenshots:\n' + screenshots.map(s =>
-        `  - ${s.imageFilename || s.image_filename}${s.sourceApp ? ` (from ${s.sourceApp})` : ''}`
-      ).join('\n'));
+      const screenshotDir = join(homedir(), 'Library', 'Mobile Documents', 'iCloud~ai~massless~push', 'Documents', 'Screenshots');
+      parts.push('Screenshots (use Read tool on these paths):\n' + screenshots.map(s => {
+        const filename = s.imageFilename || s.image_filename;
+        return `  - ${join(screenshotDir, filename)}${s.sourceApp ? ` (from ${s.sourceApp})` : ''}`;
+      }).join('\n'));
     }
 
     if (parts.length > 0) {
@@ -2306,7 +2317,9 @@ async function executeTask(task) {
     'Bash(npm *)', 'Bash(npx *)', 'Bash(yarn *)',
     'Bash(python *)', 'Bash(python3 *)', 'Bash(pip *)', 'Bash(pip3 *)',
     'Bash(push-todo *)',
-    'Task',
+    'Bash(bird *)', 'Bash(gh *)',
+    'Bash(redbook *)',
+    'Task', 'Agent',
     'WebSearch', 'WebFetch',
     'ToolSearch',
   ];
