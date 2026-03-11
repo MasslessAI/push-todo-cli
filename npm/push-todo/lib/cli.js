@@ -17,7 +17,7 @@ import { showSettings, toggleSetting, setMaxBatchSize } from './config.js';
 import { ensureDaemonRunning, getDaemonStatus, startDaemon, stopDaemon } from './daemon-health.js';
 import { install as installLaunchAgent, uninstall as uninstallLaunchAgent, getStatus as getLaunchAgentStatus } from './launchagent.js';
 import { getScreenshotPath, screenshotExists, openScreenshot } from './utils/screenshots.js';
-import { bold, red, cyan, dim, green } from './utils/colors.js';
+import { bold, red, cyan, dim, green, yellow } from './utils/colors.js';
 import { getMachineId } from './machine-id.js';
 import { parseReminder } from './reminder-parser.js';
 
@@ -139,6 +139,12 @@ ${bold('SCHEDULE (remote scheduled jobs):')}
   push-todo schedule enable <id>     Enable a schedule
   push-todo schedule disable <id>    Disable a schedule
 
+${bold('JOURNAL (daily automated journal):')}
+  push-todo journal setup            Install daily journal cron (default: 9pm)
+    --time <HH:MM>                   Time to run daily (e.g., "21:00", "09:30")
+  push-todo journal status           Show journal cron status
+  push-todo journal remove           Uninstall journal cron
+
 ${bold('SETTINGS:')}
   push-todo setting                Show all settings
   push-todo setting auto-commit    Toggle auto-commit
@@ -212,6 +218,8 @@ const options = {
   'check-messages': { type: 'string' },
   'request-input': { type: 'string' },
   'question': { type: 'string' },
+  // Journal cron options
+  'time': { type: 'string' },
 };
 
 /**
@@ -968,6 +976,63 @@ ${bold('Examples:')}
   push-todo schedule add --name "Codex review" --every 12h --create-todo "Review PRs" --git-remote github.com/user/repo --agent-type openai-codex
     `);
     return;
+  }
+
+  // Journal cron command
+  if (command === 'journal') {
+    const { install, uninstall, getStatus, parseTime, formatTime, DEFAULT_HOUR, DEFAULT_MINUTE } = await import('./journal-cron.js');
+    const subCommand = positionals[1] || 'setup';
+
+    if (subCommand === 'setup') {
+      let hour = DEFAULT_HOUR;
+      let minute = DEFAULT_MINUTE;
+      if (values.time) {
+        try {
+          ({ hour, minute } = parseTime(values.time));
+        } catch (error) {
+          console.error(red(error.message));
+          process.exit(1);
+        }
+      }
+      const result = install({ hour, minute });
+      if (result.success) {
+        console.log(green(result.message));
+        console.log(dim(`Journal entries will be written to ~/journal/`));
+        console.log(dim(`Logs: ~/.push/journal.log`));
+      } else {
+        console.error(red(result.message));
+        process.exit(1);
+      }
+      return;
+    }
+
+    if (subCommand === 'status') {
+      const status = getStatus();
+      if (!status.installed) {
+        console.log(dim('Journal cron not installed. Run: push-todo journal setup'));
+        return;
+      }
+      const timeStr = typeof status.hour === 'number' ? formatTime(status.hour, status.minute) : 'unknown';
+      console.log(`Journal cron: ${status.loaded ? green('active') : yellow('installed (not loaded)')}`);
+      console.log(`  Runs daily at: ${bold(timeStr)}`);
+      console.log(`  Logs: ~/.push/journal.log`);
+      return;
+    }
+
+    if (subCommand === 'remove') {
+      const result = uninstall();
+      if (result.success) {
+        console.log(green(result.message));
+      } else {
+        console.error(red(result.message));
+        process.exit(1);
+      }
+      return;
+    }
+
+    console.error(red(`Unknown journal subcommand: ${subCommand}`));
+    console.log(dim('Usage: push-todo journal [setup|status|remove]'));
+    process.exit(1);
   }
 
   // Connect command
