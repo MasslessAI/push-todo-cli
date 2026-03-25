@@ -53,7 +53,7 @@ const VERSION = getVersion();
 
 // Client types
 const CLIENT_NAMES = {
-  'claude-code': 'Claude Code',
+  'claude-code': 'Folders',
   'openai-codex': 'OpenAI Codex',
   'openclaw': 'OpenClaw'
 };
@@ -725,7 +725,7 @@ function getDeviceName() {
  * Initiate device code flow.
  */
 async function initiateDeviceFlow(clientType = 'claude-code') {
-  const clientName = CLIENT_NAMES[clientType] || 'Claude Code';
+  const clientName = CLIENT_NAMES[clientType] || 'Folders';
 
   const response = await fetch(`${API_BASE}/device-auth/init`, {
     method: 'POST',
@@ -797,7 +797,7 @@ function openBrowser(url) {
  * Full device auth flow with browser sign-in.
  */
 async function doFullDeviceAuth(clientType = 'claude-code') {
-  const clientName = CLIENT_NAMES[clientType] || 'Claude Code';
+  const clientName = CLIENT_NAMES[clientType] || 'Folders';
 
   console.log('  Initializing...');
 
@@ -902,7 +902,7 @@ async function doFullDeviceAuth(clientType = 'claude-code') {
  * Register project with backend.
  */
 async function registerProjectWithBackend(apiKey, clientType = 'claude-code', keywords = '', description = '') {
-  const clientName = CLIENT_NAMES[clientType] || 'Claude Code';
+  const clientName = CLIENT_NAMES[clientType] || 'Folders';
 
   const payload = {
     client_type: clientType,
@@ -1157,7 +1157,7 @@ export async function runConnect(options = {}) {
   // Auto-detect calling agent (Claude Code, OpenClaw, Codex, etc.)
   const detection = detectCallerAgent(options.client);
   let clientType = detection.clientType;
-  const clientName = CLIENT_NAMES[clientType] || 'Claude Code';
+  const clientName = CLIENT_NAMES[clientType] || 'Folders';
 
   // Handle --check-version (JSON output)
   if (options['check-version'] || options.checkVersion) {
@@ -1212,11 +1212,8 @@ export async function runConnect(options = {}) {
   // ─────────────────────────────────────────────────────────────────
 
   console.log('');
-  console.log(`  Push Voice Tasks Connect`);
-  console.log('  ' + '='.repeat(40));
-  if (detection.method !== 'default') {
-    console.log(`  Agent: ${clientName} (detected via ${detection.method})`);
-  }
+  console.log(`  Folders`);
+  console.log('  ' + '─'.repeat(30));
   console.log('');
 
   // Step 1: Check for updates
@@ -1390,7 +1387,7 @@ export async function runConnect(options = {}) {
  * @returns {Promise<Object>} Registration result with status, action_id, action_type, etc.
  */
 async function registerProjectWithBackendExplicit(apiKey, clientType, projectPath, gitRemote, projectContext = null) {
-  const clientName = CLIENT_NAMES[clientType] || 'Claude Code';
+  const clientName = CLIENT_NAMES[clientType] || 'Folders';
 
   const payload = {
     client_type: clientType,
