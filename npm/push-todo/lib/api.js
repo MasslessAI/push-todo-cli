@@ -371,7 +371,15 @@ export async function getLatestVersion() {
  * @param {string[]} keywords - List of vocabulary terms
  * @returns {Promise<Object>} Result with keywords_added, keywords_duplicate, etc.
  */
+/**
+ * @deprecated Keyword learning is now handled by Paperclip's post-heartbeat hook.
+ * See: paperclip-customized/doc/plans/2026-03-31-keyword-learning-pipeline.md
+ * This function is kept for backwards compat but will be removed in a future release.
+ */
 export async function learnVocabulary(todoId, keywords) {
+  console.warn(
+    'Warning: --learn-vocabulary is deprecated. Keywords are now auto-learned by Paperclip after each heartbeat run.'
+  );
   const response = await apiRequest('learn-keywords', {
     method: 'POST',
     body: JSON.stringify({

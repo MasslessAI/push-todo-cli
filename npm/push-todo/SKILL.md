@@ -129,26 +129,11 @@ Should I mark #701 and #427 as completed?
 push-todo --mark-completed TASK_UUID --completion-comment "Completed in Claude Code session"
 ```
 
-### Step 6: Learn Vocabulary (After Each Completion)
+### Step 6: Keyword Learning (Automatic)
 
-After marking a task complete, contribute vocabulary terms to improve future task routing:
+Keywords are now auto-learned by Paperclip after each successful heartbeat run. The system extracts terms from the issue title and description — no manual `--learn-vocabulary` call needed.
 
-1. **Extract 3-8 keywords from the session context:**
-   - File names / class names touched (e.g., `SyncService`, `RealtimeManager`)
-   - Technical concepts implemented (e.g., `WebSocket`, `reconnection`, `caching`)
-   - Domain-specific terms from the conversation
-
-2. **Call learn-vocabulary:**
-   ```bash
-   push-todo --learn-vocabulary TASK_UUID --keywords 'term1,term2,term3'
-   ```
-
-**Example:** After fixing a sync bug:
-```bash
-push-todo --learn-vocabulary abc123 --keywords 'SyncService,RealtimeManager,WebSocket,reconnection,realtime'
-```
-
-**Why this matters:** These keywords help the AI route future voice todos to the correct project. The more specific the terms, the better the matching.
+~~The `--learn-vocabulary` CLI flag is deprecated and will be removed in a future release.~~
 
 ### Key Principle
 
